@@ -13,8 +13,10 @@ import com.elysium369.meet.data.local.dao.VehicleDao
 import com.elysium369.meet.data.local.entities.*
 import com.elysium369.meet.data.supabase.SupabaseManager
 import com.elysium369.meet.core.mesh.ElysiumMeshGovernance
+import com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine
 import com.elysium369.meet.core.mesh.MeshPayloadType
 import com.elysium369.meet.core.mesh.MeshTransportLevel
+import com.elysium369.meet.core.mesh.PhysicalMeshPeer
 import com.elysium369.meet.ride.data.remote.PlatformTrustCenterGateway
 import com.elysium369.meet.ride.data.remote.ServiceVerificationSubmission
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -43,7 +45,7 @@ class FleetChatViewModel @Inject constructor(
 
     // Current authenticated user ID
     val currentUserId: String
-        get() = SupabaseManager.client.auth.currentUserOrNull()?.id ?: "local_owner"
+        get() = SupabaseManager.client.auth.currentUserOrNull()?.id ?: com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.localNodeId
 
     // Active selected business ID
     private val _selectedBusinessId = MutableStateFlow<String?>(null)
@@ -139,6 +141,111 @@ class FleetChatViewModel @Inject constructor(
     val activeVideoCall: StateFlow<VideoCallSession?> = _activeVideoCall.asStateFlow()
     private var videoCallTimerJob: kotlinx.coroutines.Job? = null
 
+    init {
+        // Escuchar llamadas P2P entrantes desde el motor físico
+        viewModelScope.launch {
+            ElysiumPhysicalMeshEngine.incomingCallEvents.collect { incoming ->
+                val dummyPartner = FleetMemberEntity(
+                    id = incoming.callerId,
+                    businessId = "mesh_p2p",
+                    userId = incoming.callerId,
+                    role = "CONDUCTOR",
+                    email = "${incoming.callerName}@mesh.direct",
+                    inviteStatus = "ACCEPTED",
+                    joinedAt = System.currentTimeMillis()
+                )
+                _selectedPartner.value = dummyPartner
+
+                if (incoming.callType == "VIDEO") {
+                    _activeVideoCall.value = VideoCallSession(
+                        isActive = true,
+                        partnerId = incoming.callerId,
+                        durationSeconds = 0,
+                        route = MeshTransportLevel.WIFI_DIRECT_MESH
+                    )
+                } else {
+                    _activeVoiceCall.value = VoiceCallSession(
+                        isActive = true,
+                        partnerId = incoming.callerId,
+                        durationSeconds = 0,
+                        route = MeshTransportLevel.WIFI_DIRECT_MESH
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            ElysiumPhysicalMeshEngine.callTerminatedEvents.collect {
+                _activeVoiceCall.value = null
+                _activeVideoCall.value = null
+                callTimerJob?.cancel()
+                videoCallTimerJob?.cancel()
+            }
+        }
+    }
+
+    /**
+     * Enlaza un nodo físico descubierto y abre el chat directamente
+     */
+    fun linkPhysicalPeer(peer: PhysicalMeshPeer) {
+        viewModelScope.launch {
+            val member = ElysiumPhysicalMeshEngine.linkPeerOneTouch(peer)
+            selectPartner(member)
+        }
+    }
+
+    /**
+     * Enlaza directamente por IP (IPv4) o por payload de QR offline
+     */
+    fun linkPeerByIpOrPayload(input: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val trimmed = input.trim()
+            val parsedPeer = if (trimmed.startsWith("elysium-mesh://")) {
+                ElysiumPhysicalMeshEngine.parseOfflineQrPayload(trimmed)
+            } else {
+                val ipPart = trimmed.substringBefore(":")
+                val portPart = trimmed.substringAfter(":", "36901").toIntOrNull() ?: ElysiumPhysicalMeshEngine.TCP_DATA_PORT
+                if (ipPart.matches(Regex("\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"))) {
+                    PhysicalMeshPeer(
+                        nodeId = "EVG-PEER-${ipPart.replace(".", "")}",
+                        deviceName = "Nodo Directo ($ipPart)",
+                        ipAddress = ipPart,
+                        port = portPart,
+                        lastSeenMs = System.currentTimeMillis()
+                    )
+                } else {
+                    null
+                }
+            }
+
+            if (parsedPeer == null) {
+                withContext(Dispatchers.Main) {
+                    onResult(false, "Formato no válido. Ingresa una IP IPv4 (ej: 192.168.1.20) o un código QR elysium-mesh.")
+                }
+                return@launch
+            }
+
+            val member = ElysiumPhysicalMeshEngine.linkPeerOneTouch(parsedPeer)
+            withContext(Dispatchers.Main) {
+                selectPartner(member)
+                onResult(true, "Nodo enlazado con éxito: ${parsedPeer.deviceName}")
+            }
+        }
+    }
+
+
+    /**
+     * Resuelve el par físico para transmisión directa por socket P2P
+     */
+    fun findTargetMeshPeer(partnerUserId: String): PhysicalMeshPeer? {
+        val linked = ElysiumMeshGovernance.activeLinkedPeer.value
+        if (linked != null && (linked.nodeId == partnerUserId || linked.nodeId.contains(partnerUserId, ignoreCase = true) || partnerUserId.contains(linked.nodeId, ignoreCase = true))) {
+            return linked
+        }
+        return ElysiumMeshGovernance.discoveredPhysicalPeers.value.find {
+            it.nodeId == partnerUserId || it.nodeId.contains(partnerUserId, ignoreCase = true) || partnerUserId.contains(it.nodeId, ignoreCase = true)
+        } ?: linked ?: ElysiumMeshGovernance.discoveredPhysicalPeers.value.firstOrNull()
+    }
+
     /**
      * Set active business ID
      */
@@ -147,21 +254,18 @@ class FleetChatViewModel @Inject constructor(
     }
 
     /**
-     * Get recent chat conversations for the current business
+     * Get recent chat conversations for the current business or all direct mesh chats
      */
     val recentChats: Flow<List<ChatMessageEntity>> = selectedBusinessId.flatMapLatest { businessId ->
-        if (businessId == null) flowOf(emptyList())
-        else chatDao.getRecentChats(businessId, currentUserId)
+        chatDao.getAllRecentChats(currentUserId)
     }.flowOn(Dispatchers.IO)
 
     /**
-     * Get chat messages between current user and selected partner
+     * Get chat messages between current user and selected partner across business or direct mesh
      */
-    val messages: Flow<List<ChatMessageEntity>> = combine(selectedBusinessId, selectedPartner) { businessId, partner ->
-        Pair(businessId, partner)
-    }.flatMapLatest { (businessId, partner) ->
-        if (businessId == null || partner == null) flowOf(emptyList())
-        else chatDao.getChatHistory(businessId, currentUserId, partner.userId)
+    val messages: Flow<List<ChatMessageEntity>> = selectedPartner.flatMapLatest { partner ->
+        if (partner == null) flowOf(emptyList())
+        else chatDao.getChatHistoryAnyBusiness(currentUserId, partner.userId)
     }.flowOn(Dispatchers.IO)
 
     /**
@@ -175,7 +279,7 @@ class FleetChatViewModel @Inject constructor(
     }
 
     private fun checkBlockStatus() {
-        val businessId = _selectedBusinessId.value ?: return
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
         val partner = _selectedPartner.value ?: return
         viewModelScope.launch(Dispatchers.IO) {
             val blocked = chatDao.isUserBlockedBy(businessId, currentUserId, partner.userId) > 0
@@ -187,7 +291,7 @@ class FleetChatViewModel @Inject constructor(
      * Toggle block state for active partner
      */
     fun toggleBlockActivePartner() {
-        val businessId = _selectedBusinessId.value ?: return
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
         val partner = _selectedPartner.value ?: return
         val currentlyBlocked = _isPartnerBlocked.value
 
@@ -243,8 +347,8 @@ class FleetChatViewModel @Inject constructor(
      * Send standard text message
      */
     fun sendTextMessage(text: String) {
-        val businessId = _selectedBusinessId.value ?: return
         val partner = _selectedPartner.value ?: return
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
         if (text.trim().isEmpty()) return
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -268,6 +372,17 @@ class FleetChatViewModel @Inject constructor(
                 status = "PENDING"
             )
             chatDao.insertMessage(msg)
+
+            // 1. Intentar transmisión física Mesh P2P directa si hay nodo en alcance o estamos off-grid
+            val peer = findTargetMeshPeer(partner.userId)
+            if (peer != null) {
+                val ok = ElysiumPhysicalMeshEngine.sendTextMessage(peer.ipAddress, peer.port, msg)
+                if (ok) {
+                    return@launch
+                }
+            }
+
+            // 2. Si no se pudo por socket P2P directo o estamos conectados a la nube
             simulateMessageDelivery(msg.id, MeshPayloadType.TEXT)
         }
     }
@@ -294,8 +409,8 @@ class FleetChatViewModel @Inject constructor(
         val durationMs = System.currentTimeMillis() - recordStartTime
         val durationSec = (durationMs / 1000).toInt().coerceAtLeast(1)
 
-        val businessId = _selectedBusinessId.value ?: return
         val partner = _selectedPartner.value ?: return
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
 
         if (file != null && file.exists()) {
             viewModelScope.launch(Dispatchers.IO) {
@@ -318,6 +433,15 @@ class FleetChatViewModel @Inject constructor(
                     status = "PENDING"
                 )
                 chatDao.insertMessage(msg)
+
+                val peer = findTargetMeshPeer(partner.userId)
+                if (peer != null) {
+                    val ok = ElysiumPhysicalMeshEngine.sendAudioFile(peer.ipAddress, peer.port, msg, file, durationSec)
+                    if (ok) {
+                        return@launch
+                    }
+                }
+
                 simulateMessageDelivery(msg.id, MeshPayloadType.AUDIO_NOTE)
             }
         }
@@ -409,12 +533,12 @@ class FleetChatViewModel @Inject constructor(
      * Send file or image attachment
      */
     fun sendFileAttachment(file: File, type: String) { // "IMAGE", "PDF", etc.
-        val businessId = _selectedBusinessId.value ?: return
         val partner = _selectedPartner.value ?: return
 
         val isImg = type.contains("IMAGE", ignoreCase = true) || file.extension.lowercase() in listOf("jpg", "jpeg", "png", "webp")
         val effectiveType = if (isImg) "IMAGE" else "FILE"
         val payloadType = if (isImg) MeshPayloadType.IMAGE else MeshPayloadType.TEXT
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
 
         viewModelScope.launch(Dispatchers.IO) {
             val msg = ChatMessageEntity(
@@ -431,6 +555,15 @@ class FleetChatViewModel @Inject constructor(
                 status = "PENDING"
             )
             chatDao.insertMessage(msg)
+
+            val peer = findTargetMeshPeer(partner.userId)
+            if (peer != null) {
+                val ok = ElysiumPhysicalMeshEngine.sendImageFile(peer.ipAddress, peer.port, msg, file)
+                if (ok) {
+                    return@launch
+                }
+            }
+
             simulateMessageDelivery(msg.id, payloadType)
         }
     }
@@ -639,9 +772,9 @@ class FleetChatViewModel @Inject constructor(
 
     // ── Voice Call Controls (Mesh VoIP / Walkie-Talkie) ──
     fun startVoiceCall() {
-        val businessId = _selectedBusinessId.value ?: return
         val partner = _selectedPartner.value ?: return
         val resolution = ElysiumMeshGovernance.resolveRouteForPayload(MeshPayloadType.VOICE_CALL_STREAM)
+        val peer = findTargetMeshPeer(partner.userId)
 
         _activeVoiceCall.value = VoiceCallSession(
             isActive = true,
@@ -649,6 +782,14 @@ class FleetChatViewModel @Inject constructor(
             durationSeconds = 0,
             route = resolution.level
         )
+
+        if (peer != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                ElysiumPhysicalMeshEngine.sendCallSignal(peer.ipAddress, peer.port, "RING_AUDIO", partner.userId)
+                ElysiumPhysicalMeshEngine.startAudioCallStreaming(peer.ipAddress)
+            }
+        }
+
         callTimerJob?.cancel()
         callTimerJob = viewModelScope.launch(Dispatchers.Default) {
             while (coroutineContext[kotlinx.coroutines.Job]?.isActive == true && _activeVoiceCall.value?.isActive == true) {
@@ -674,8 +815,17 @@ class FleetChatViewModel @Inject constructor(
 
     fun endVoiceCall() {
         val call = _activeVoiceCall.value ?: return
-        val businessId = _selectedBusinessId.value ?: return
         val partner = _selectedPartner.value ?: return
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
+        val peer = findTargetMeshPeer(partner.userId)
+
+        if (peer != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                ElysiumPhysicalMeshEngine.sendCallSignal(peer.ipAddress, peer.port, "END", partner.userId)
+            }
+        }
+        ElysiumPhysicalMeshEngine.stopAudioCallStreaming()
+
         callTimerJob?.cancel()
         callTimerJob = null
         val duration = call.durationSeconds
@@ -711,9 +861,9 @@ class FleetChatViewModel @Inject constructor(
 
     // ── Video Call Controls (Mesh Video P2P en Vivo) ──
     fun startVideoCall() {
-        val businessId = _selectedBusinessId.value ?: return
         val partner = _selectedPartner.value ?: return
         val resolution = ElysiumMeshGovernance.resolveRouteForPayload(MeshPayloadType.VIDEO_CALL_STREAM)
+        val peer = findTargetMeshPeer(partner.userId)
 
         _activeVideoCall.value = VideoCallSession(
             isActive = true,
@@ -721,6 +871,15 @@ class FleetChatViewModel @Inject constructor(
             durationSeconds = 0,
             route = resolution.level
         )
+
+        if (peer != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                ElysiumPhysicalMeshEngine.sendCallSignal(peer.ipAddress, peer.port, "RING_VIDEO", partner.userId)
+                ElysiumPhysicalMeshEngine.startAudioCallStreaming(peer.ipAddress)
+                ElysiumPhysicalMeshEngine.startVideoCallStreaming(peer.ipAddress)
+            }
+        }
+
         videoCallTimerJob?.cancel()
         videoCallTimerJob = viewModelScope.launch(Dispatchers.Default) {
             while (coroutineContext[kotlinx.coroutines.Job]?.isActive == true && _activeVideoCall.value?.isActive == true) {
@@ -752,8 +911,18 @@ class FleetChatViewModel @Inject constructor(
 
     fun endVideoCall() {
         val call = _activeVideoCall.value ?: return
-        val businessId = _selectedBusinessId.value ?: return
         val partner = _selectedPartner.value ?: return
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
+        val peer = findTargetMeshPeer(partner.userId)
+
+        if (peer != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                ElysiumPhysicalMeshEngine.sendCallSignal(peer.ipAddress, peer.port, "END", partner.userId)
+            }
+        }
+        ElysiumPhysicalMeshEngine.stopAudioCallStreaming()
+        ElysiumPhysicalMeshEngine.stopVideoCallStreaming()
+
         videoCallTimerJob?.cancel()
         videoCallTimerJob = null
         val duration = call.durationSeconds

@@ -75,6 +75,9 @@ class MeetApplication : Application(), Configuration.Provider {
         dtcLoader.loadIfEmpty()
         dtcLoader.loadKnowledgeGraphIfEmpty()
 
+        // ── Iniciar motor físico P2P Mesh y observador de hardware en tiempo real ──
+        com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.start(this, db)
+
         // ── Schedule automatic database maintenance (daily) ──
         scheduleDatabaseMaintenance()
         scheduleVanguardCommerceOutboxSync()

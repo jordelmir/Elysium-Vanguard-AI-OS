@@ -48,6 +48,11 @@ fun ElysiumMeshMasterDock(
     val isWifiOn by ElysiumMeshGovernance.isWifiMeshEnabled.collectAsState()
     val isBleOn by ElysiumMeshGovernance.isBleMeshEnabled.collectAsState()
     val isDualOn by ElysiumMeshGovernance.isDualSyncEnabled.collectAsState()
+    val isWifiHwOn by ElysiumMeshGovernance.isWifiHardwareOn.collectAsState()
+    val isBleHwOn by ElysiumMeshGovernance.isBleHardwareOn.collectAsState()
+    val localIp by ElysiumMeshGovernance.localIpAddress.collectAsState()
+    val discoveredPeers by ElysiumMeshGovernance.discoveredPhysicalPeers.collectAsState()
+    val activeLinkedPeer by ElysiumMeshGovernance.activeLinkedPeer.collectAsState()
     val activeRoute by ElysiumMeshGovernance.activeRoute.collectAsState()
     val signalQuality by ElysiumMeshGovernance.meshSignalQuality.collectAsState()
     val peersCount by ElysiumMeshGovernance.connectedPeersCount.collectAsState()
@@ -89,9 +94,9 @@ fun ElysiumMeshMasterDock(
             width = 1.5.dp,
             brush = Brush.linearGradient(
                 colors = listOf(
-                    Color(0xFF00F0FF).copy(alpha = if (isWifiOn) pulseAlpha else 0.3f),
-                    Color(0xFF39FF66).copy(alpha = if (isDualOn) pulseAlpha else 0.2f),
-                    Color(0xFF7928CA).copy(alpha = if (isBleOn) pulseAlpha else 0.3f)
+                    Color(0xFF00F0FF).copy(alpha = if (isWifiOn && isWifiHwOn) pulseAlpha else 0.2f),
+                    Color(0xFF39FF66).copy(alpha = if (isDualOn && isWifiHwOn && isBleHwOn) pulseAlpha else 0.2f),
+                    Color(0xFF7928CA).copy(alpha = if (isBleOn && isBleHwOn) pulseAlpha else 0.2f)
                 )
             )
         )
@@ -127,7 +132,7 @@ fun ElysiumMeshMasterDock(
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = if (isDualOn) "⚡" else if (isWifiOn) "📶" else if (isBleOn) "📡" else "⭕",
+                            text = if (isDualOn && isWifiHwOn && isBleHwOn) "⚡" else if (isWifiOn && isWifiHwOn) "📶" else if (isBleOn && isBleHwOn) "📡" else "⭕",
                             fontSize = 18.sp
                         )
                     }
@@ -141,23 +146,35 @@ fun ElysiumMeshMasterDock(
                                 fontSize = 14.sp,
                                 letterSpacing = 1.sp
                             )
+                            val liveTagText = when {
+                                !isWifiHwOn && !isBleHwOn -> "HW APAGADO"
+                                activeLinkedPeer != null -> "ENLAZADO"
+                                (isWifiOn && isWifiHwOn) || (isBleOn && isBleHwOn) -> "EN VIVO"
+                                else -> "INACTIVO"
+                            }
+                            val liveTagColor = when {
+                                !isWifiHwOn && !isBleHwOn -> Color(0xFFFF4466)
+                                activeLinkedPeer != null -> Color(0xFF00F0FF)
+                                (isWifiOn && isWifiHwOn) || (isBleOn && isBleHwOn) -> Color(0xFF39FF66)
+                                else -> MeetColors.textSecondary
+                            }
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(4.dp))
-                                    .background(Color(0xFF39FF66).copy(alpha = 0.18f))
-                                    .border(1.dp, Color(0xFF39FF66), RoundedCornerShape(4.dp))
+                                    .background(liveTagColor.copy(alpha = 0.18f))
+                                    .border(1.dp, liveTagColor, RoundedCornerShape(4.dp))
                                     .padding(horizontal = 6.dp, vertical = 2.dp)
                             ) {
                                 Text(
-                                    text = if (isWifiOn || isBleOn) "EN VIVO" else "APAGADO",
-                                    color = if (isWifiOn || isBleOn) Color(0xFF39FF66) else MeetColors.textSecondary,
+                                    text = liveTagText,
+                                    color = liveTagColor,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 9.sp
                                 )
                             }
                         }
                         Text(
-                            text = "GOBERNADOR SUPREMO DE RADIOS P2P",
+                            text = if (localIp != null) "IP LOCAL: $localIp · HW RADAR ON" else "GOBERNADOR SUPREMO DE RADIOS P2P",
                             color = Color(0xFF00D9FF),
                             fontWeight = FontWeight.Bold,
                             fontSize = 9.sp,
@@ -181,10 +198,10 @@ fun ElysiumMeshMasterDock(
                             modifier = Modifier
                                 .size(8.dp)
                                 .clip(CircleShape)
-                                .background(if (peersCount > 0) Color(0xFF39FF66) else Color(0xFFFF3366))
+                                .background(if (discoveredPeers.isNotEmpty()) Color(0xFF39FF66) else if (isWifiHwOn || isBleHwOn) Color(0xFFFFAA00) else Color(0xFFFF3366))
                         )
                         Text(
-                            text = "$peersCount Nodos",
+                            text = "${discoveredPeers.size} Nodos P2P",
                             color = Color.White,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
@@ -227,25 +244,25 @@ fun ElysiumMeshMasterDock(
 
                     HierarchyBadge(
                         order = "2°",
-                        label = "Wi-Fi Mesh",
+                        label = if (!isWifiHwOn) "Wi-Fi OFF" else "Wi-Fi Mesh",
                         isActive = activeRoute == MeshTransportLevel.WIFI_DIRECT_MESH,
-                        accentColor = Color(0xFF39FF66)
+                        accentColor = if (isWifiHwOn) Color(0xFF39FF66) else Color(0xFFFF4444)
                     )
 
                     Text("▶", color = Color(0xFF304565), fontSize = 10.sp)
 
                     HierarchyBadge(
                         order = "3°",
-                        label = "BLE Mesh",
+                        label = if (!isBleHwOn) "BLE OFF" else "BLE Mesh",
                         isActive = activeRoute == MeshTransportLevel.BLUETOOTH_BLE_MESH,
-                        accentColor = Color(0xFF9D00FF)
+                        accentColor = if (isBleHwOn) Color(0xFF9D00FF) else Color(0xFFFF4444)
                     )
                 }
             }
 
             Spacer(Modifier.height(14.dp))
 
-            // ── LOS 3 INTERRUPTORES NEÓN 3D LLAMATIVOS ──
+            // ── LOS 3 INTERRUPTORES NEÓN 3D LLAMATIVOS CON DETECCIÓN REAL DE HARDWARE ──
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -254,31 +271,43 @@ fun ElysiumMeshMasterDock(
                 Neon3DSwitchButton(
                     modifier = Modifier.weight(1f),
                     title = "WIFI MESH",
-                    subtitle = "Llamadas · HD",
+                    subtitle = if (!isWifiHwOn) "HW APAGADO ⚠️" else if (localIp != null) "IP: ${localIp?.takeLast(11)}" else "Llamadas · HD",
                     icon = "⚡",
-                    isOn = isWifiOn,
-                    activeColor = Color(0xFF00F0FF),
-                    onToggle = { ElysiumMeshGovernance.setWifiMesh(!isWifiOn) }
+                    isOn = isWifiOn && isWifiHwOn,
+                    activeColor = if (isWifiHwOn) Color(0xFF00F0FF) else Color(0xFFFF3366),
+                    onToggle = {
+                        if (isWifiHwOn) {
+                            ElysiumMeshGovernance.setWifiMesh(!isWifiOn)
+                        } else {
+                            ElysiumMeshGovernance.setWifiMesh(true)
+                        }
+                    }
                 )
 
                 // 2. SWITCH BLUETOOTH MESH
                 Neon3DSwitchButton(
                     modifier = Modifier.weight(1f),
                     title = "BLE MESH",
-                    subtitle = "Resiliente · SOS",
+                    subtitle = if (!isBleHwOn) "HW APAGADO ⚠️" else "Resiliente · SOS",
                     icon = "📡",
-                    isOn = isBleOn,
-                    activeColor = Color(0xFF7928CA),
-                    onToggle = { ElysiumMeshGovernance.setBleMesh(!isBleOn) }
+                    isOn = isBleOn && isBleHwOn,
+                    activeColor = if (isBleHwOn) Color(0xFF7928CA) else Color(0xFFFF3366),
+                    onToggle = {
+                        if (isBleHwOn) {
+                            ElysiumMeshGovernance.setBleMesh(!isBleOn)
+                        } else {
+                            ElysiumMeshGovernance.setBleMesh(true)
+                        }
+                    }
                 )
 
                 // 3. SWITCH DUAL SYNC SINÉRGICO (AMBOS ACTIVOS CON PRIORIDAD)
                 Neon3DSwitchButton(
                     modifier = Modifier.weight(1.15f),
                     title = "DUAL SYNC",
-                    subtitle = "Prioridad Wi-Fi",
+                    subtitle = if (!isWifiHwOn || !isBleHwOn) "HW PARCIAL" else if (discoveredPeers.isNotEmpty()) "${discoveredPeers.size} P2P Directo" else "Prioridad Wi-Fi",
                     icon = "🚀",
-                    isOn = isDualOn,
+                    isOn = isDualOn && isWifiHwOn && isBleHwOn,
                     activeColor = Color(0xFF39FF66),
                     onToggle = { ElysiumMeshGovernance.setDualSync(!isDualOn) }
                 )

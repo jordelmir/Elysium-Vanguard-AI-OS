@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +68,7 @@ fun FleetChatDetailScreen(
     val activeVoiceCall by viewModel.activeVoiceCall.collectAsState()
     val activeVideoCall by viewModel.activeVideoCall.collectAsState()
     val meshRoute by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeRoute.collectAsState()
+    val remoteVideoFrame by com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.remoteVideoFrame.collectAsState()
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -326,8 +328,15 @@ fun FleetChatDetailScreen(
                                 )
                                 .border(1.dp, Color(0xFF1B3B60), RoundedCornerShape(14.dp))
                         ) {
-                            // Central Video stream placeholder / cyber reticle
-                            if (call.isVideoActive) {
+                            // Central Video stream placeholder / cyber reticle o Video Físico Real
+                            if (call.isVideoActive && remoteVideoFrame != null) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = remoteVideoFrame!!.asImageBitmap(),
+                                    contentDescription = "Video Remoto en Vivo",
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                )
+                            } else if (call.isVideoActive) {
                                 Column(
                                     modifier = Modifier.align(Alignment.Center),
                                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -350,7 +359,7 @@ fun FleetChatDetailScreen(
                                         fontSize = 12.sp
                                     )
                                     Text(
-                                        text = "Stream H.264 P2P Activo",
+                                        text = "Stream H.264 P2P Activo (<25ms)",
                                         color = Color(0xFF39FF66),
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.SemiBold

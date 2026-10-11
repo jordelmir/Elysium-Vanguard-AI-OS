@@ -33,10 +33,18 @@ import com.elysium369.meet.ui.FleetChatViewModel
 import com.elysium369.meet.ui.components.EliteCard
 import com.elysium369.meet.ui.components.EliteTopAppBar
 import com.elysium369.meet.ui.components.EliteButton
+import androidx.compose.ui.text.style.TextAlign
+import com.elysium369.meet.core.mesh.ElysiumMeshGovernance
+import com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine
+import com.elysium369.meet.core.mesh.PhysicalMeshPeer
+import com.elysium369.meet.core.share.QrCodeImage
 import com.elysium369.meet.ui.components.PhantomSectionHeader
 import com.elysium369.meet.ui.theme.MeetColors
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -659,66 +667,357 @@ fun MessagingTabContent(
     navController: NavController,
     onSubmitDvir: (String, Boolean, Boolean, Boolean, Boolean, Boolean) -> Unit
 ) {
+    val context = LocalContext.current
     var searchQuery by remember { mutableStateOf("") }
     var activeFilter by remember { mutableStateOf("Todos") }
     var showNewChatDialog by remember { mutableStateOf(false) }
+    var showQrMeshDialog by remember { mutableStateOf(false) }
+    var isScanningRadar by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
-    val meshRoute by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeRoute.collectAsState()
-    val peersCount by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.connectedPeersCount.collectAsState()
-    val isWifiMeshOn by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.isWifiMeshEnabled.collectAsState()
-    val isBleMeshOn by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.isBleMeshEnabled.collectAsState()
+    val meshRoute by ElysiumMeshGovernance.activeRoute.collectAsState()
+    val isWifiHwOn by ElysiumMeshGovernance.isWifiHardwareOn.collectAsState()
+    val isBleHwOn by ElysiumMeshGovernance.isBleHardwareOn.collectAsState()
+    val localIp by ElysiumMeshGovernance.localIpAddress.collectAsState()
+    val discoveredPeers by ElysiumMeshGovernance.discoveredPhysicalPeers.collectAsState()
+    val peersCount by ElysiumMeshGovernance.connectedPeersCount.collectAsState()
+    val isWifiMeshOn by ElysiumMeshGovernance.isWifiMeshEnabled.collectAsState()
+    val isBleMeshOn by ElysiumMeshGovernance.isBleMeshEnabled.collectAsState()
+
+    val activeVoiceCall by viewModel.activeVoiceCall.collectAsState()
+    val activeVideoCall by viewModel.activeVideoCall.collectAsState()
+
+    // Observador periódico activo de hardware de radios
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            ElysiumMeshGovernance.refreshHardwareState(context)
+            kotlinx.coroutines.delay(2000)
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
-        // ── Top Mesh Presence Strip (WhatsApp / Elysium Telemetry) ──
-        Surface(
+        // ── Banner de Llamada Mesh Entrante / Activa ──
+        if (activeVoiceCall?.isActive == true || activeVideoCall?.isActive == true) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp)
+                    .clickable { navController.navigate("fleet_chat_detail") },
+                shape = RoundedCornerShape(14.dp),
+                color = Color(0xFF072013),
+                border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF39FF66))
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(if (activeVideoCall?.isActive == true) "📹" else "📞", fontSize = 20.sp)
+                        Column {
+                            Text(
+                                text = if (activeVideoCall?.isActive == true) "VIDEOLLAMADA MESH ACTIVA" else "LLAMADA DE VOZ MESH ACTIVA",
+                                color = Color(0xFF39FF66),
+                                fontWeight = FontWeight.Black,
+                                fontSize = 11.sp
+                            )
+                            Text(
+                                text = "Toca para abrir el panel de llamada",
+                                color = Color.White,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Button(
+                            onClick = { navController.navigate("fleet_chat_detail") },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF39FF66)),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                        ) {
+                            Text("ABRIR", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                        }
+                        IconButton(
+                            onClick = {
+                                if (activeVideoCall?.isActive == true) viewModel.endVideoCall()
+                                else viewModel.endVoiceCall()
+                            },
+                            modifier = Modifier
+                                .size(32.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFFF1744))
+                        ) {
+                            Icon(Icons.Default.CallEnd, contentDescription = "Colgar", tint = Color.White, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Master Card: RADAR MESH P2P DIRECTO (100% OFF-GRID) ──
+        EliteCard(
+            glowColor = if (isWifiHwOn && isBleHwOn) Color(0xFF00F0FF).copy(alpha = 0.2f) else Color(0xFFFF9100).copy(alpha = 0.2f),
+            backgroundColor = Color(0xFF07111E),
+            borderColor = if (isWifiHwOn || isBleHwOn) Color(0xFF163255) else Color(0xFF4A1A1A),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 10.dp),
-            shape = RoundedCornerShape(12.dp),
-            color = Color(0xFF091222),
-            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF162A48))
+                .padding(bottom = 12.dp)
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(meshRoute.badgeIcon, fontSize = 14.sp)
-                    Column {
+                // Header con estado de red
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(meshRoute.badgeIcon, fontSize = 14.sp)
+                        Column {
+                            Text(
+                                text = "RADAR MESH P2P DIRECTO",
+                                color = Color(0xFF00D9FF),
+                                fontWeight = FontWeight.Black,
+                                fontSize = 11.sp
+                            )
+                            Text(
+                                text = if (isWifiHwOn && isBleHwOn) "Modo Dual Sinérgico (100% Off-Grid)"
+                                       else if (isWifiHwOn) "Wi-Fi Mesh Activo · BLE apagado"
+                                       else if (isBleHwOn) "BLE Mesh Activo · Wi-Fi apagado"
+                                       else "⚠️ RADIOS APAGADAS · ACTIVA WI-FI O BLE",
+                                color = if (isWifiHwOn || isBleHwOn) MeetColors.textSecondary else Color(0xFFFF5252),
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isWifiHwOn || isBleHwOn) Color(0xFF00F0FF).copy(alpha = 0.15f) else Color(0xFFFF1744).copy(alpha = 0.15f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, if (isWifiHwOn || isBleHwOn) Color(0xFF00F0FF) else Color(0xFFFF1744))
+                    ) {
                         Text(
-                            text = "ESTADO DE RED: ${meshRoute.displayName.uppercase()}",
-                            color = Color(0xFF00D9FF),
+                            text = "${discoveredPeers.size} NODOS",
+                            color = if (isWifiHwOn || isBleHwOn) Color(0xFF00F0FF) else Color(0xFFFF1744),
                             fontWeight = FontWeight.Black,
-                            fontSize = 10.sp
-                        )
-                        Text(
-                            text = if (isWifiMeshOn || isBleMeshOn) "Transmitiendo por Malla P2P · $peersCount nodos cerca" else "Radios Mesh apagadas",
-                            color = MeetColors.textSecondary,
-                            fontSize = 9.sp
+                            fontSize = 9.sp,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                         )
                     }
                 }
 
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(if (isWifiMeshOn) Color(0xFF00F0FF).copy(alpha = 0.2f) else Color(0xFF22344E))
-                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                // Badges de detección física de hardware en tiempo real
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = if (isWifiMeshOn) "WIFI MESH ON" else "BLE ON",
-                        color = if (isWifiMeshOn) Color(0xFF00F0FF) else Color(0xFF9D00FF),
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 9.sp
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (isWifiHwOn) Color(0xFF00E5FF).copy(alpha = 0.12f) else Color(0xFF222B35),
+                        border = androidx.compose.foundation.BorderStroke(0.8.dp, if (isWifiHwOn) Color(0xFF00E5FF) else Color(0xFF37474F)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = if (isWifiHwOn) "📶 WI-FI ON" else "📶 WI-FI OFF",
+                                color = if (isWifiHwOn) Color(0xFF00E5FF) else Color.Gray,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 8.5.sp
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (isBleHwOn) Color(0xFFB388FF).copy(alpha = 0.12f) else Color(0xFF222B35),
+                        border = androidx.compose.foundation.BorderStroke(0.8.dp, if (isBleHwOn) Color(0xFFB388FF) else Color(0xFF37474F)),
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = if (isBleHwOn) "📡 BLE ON" else "📡 BLE OFF",
+                                color = if (isBleHwOn) Color(0xFFB388FF) else Color.Gray,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 8.5.sp
+                            )
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFF102033),
+                        border = androidx.compose.foundation.BorderStroke(0.8.dp, Color(0xFF1E3A5F)),
+                        modifier = Modifier.weight(1.4f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "🌐 ${localIp ?: "Sin IP local"}",
+                                color = Color(0xFF64B5F6),
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 8.5.sp,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                }
+
+                // ── Los 2 Botones Maestros de Conexión ──
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Botón 1: ESCANEAR RADAR
+                    Button(
+                        onClick = {
+                            isScanningRadar = true
+                            ElysiumPhysicalMeshEngine.triggerQuickDiscovery()
+                            ElysiumMeshGovernance.refreshHardwareState(context)
+                            coroutineScope.launch {
+                                kotlinx.coroutines.delay(1200)
+                                isScanningRadar = false
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(38.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isScanningRadar) Color(0xFF00838F) else Color(0xFF00B0FF)
+                        )
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (isScanningRadar) {
+                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text("⚡", fontSize = 12.sp)
+                            }
+                            Text(
+                                text = if (isScanningRadar) "BUSCANDO..." else "ESCANEAR RADAR",
+                                color = Color.Black,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+
+                    // Botón 2: QR MESH P2P
+                    OutlinedButton(
+                        onClick = { showQrMeshDialog = true },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(38.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.2.dp, Color(0xFF00D9FF)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00D9FF))
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("📱", fontSize = 12.sp)
+                            Text("QR MESH P2P", fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                        }
+                    }
+                }
+
+                // ── Lista de Pares Físicos Descubiertos (Enlace 1-Toque) ──
+                if (discoveredPeers.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "DISPOSITIVOS DETECTADOS (1-TOQUE PARA ENLAZAR):",
+                            color = Color(0xFF39FF66),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 9.sp
+                        )
+
+                        discoveredPeers.forEach { peer ->
+                            Surface(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xFF0B1728),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.4f))
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(32.dp)
+                                                .clip(CircleShape)
+                                                .background(Color(0xFF00E5FF).copy(alpha = 0.2f))
+                                                .border(1.dp, Color(0xFF00E5FF), CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("📡", fontSize = 14.sp)
+                                        }
+                                        Column {
+                                            Text(
+                                                text = peer.deviceName,
+                                                color = Color.White,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.5.sp
+                                            )
+                                            Text(
+                                                text = "${peer.nodeId} · IP: ${peer.ipAddress}:${peer.port}",
+                                                color = Color(0xFF80D8FF),
+                                                fontSize = 8.5.sp
+                                            )
+                                        }
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            viewModel.linkPhysicalPeer(peer)
+                                            navController.navigate("fleet_chat_detail")
+                                        },
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF39FF66)),
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        modifier = Modifier.height(30.dp)
+                                    ) {
+                                        Text(
+                                            text = "ENLAZAR 1-TOQUE",
+                                            color = Color.Black,
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 9.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+
 
         // Search conversations bar
         OutlinedTextField(
@@ -851,6 +1150,16 @@ fun MessagingTabContent(
             onSelectPartner = { partner ->
                 viewModel.selectPartner(partner)
                 showNewChatDialog = false
+                navController.navigate("fleet_chat_detail")
+            }
+        )
+    }
+
+    if (showQrMeshDialog) {
+        MeshOfflineQrDialog(
+            viewModel = viewModel,
+            onDismiss = { showQrMeshDialog = false },
+            onSuccessLink = {
                 navController.navigate("fleet_chat_detail")
             }
         )
@@ -1000,20 +1309,98 @@ fun NewChatDialog(
     onSelectPartner: (FleetMemberEntity) -> Unit
 ) {
     val members by viewModel.membersForActiveBusiness.collectAsState(initial = emptyList())
-    
+    val discoveredPeers by ElysiumMeshGovernance.discoveredPhysicalPeers.collectAsState()
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Iniciar Conversación", color = Color.White) },
+        title = { Text("Iniciar Conversación", color = Color.White, fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Selecciona un miembro de la flota para chatear:", color = MeetColors.textSecondary, fontSize = 12.sp)
-                
-                if (members.isEmpty()) {
-                    Text("No hay conductores o miembros registrados en esta empresa.", color = MeetColors.textSecondary, fontSize = 12.sp)
+                // ── Dispositivos Mesh Físicos (Offline 1-Toque) ──
+                Text(
+                    text = "DISPOSITIVOS MESH CERCA (1-TOQUE OFFLINE):",
+                    color = Color(0xFF00D9FF),
+                    fontWeight = FontWeight.Black,
+                    fontSize = 10.sp
+                )
+
+                if (discoveredPeers.isEmpty()) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF0B1624),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF162A45))
+                    ) {
+                        Text(
+                            text = "Buscando nodos mesh cercanos... Asegúrate de tener Wi-Fi o Bluetooth encendido.",
+                            color = MeetColors.textSecondary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
                 } else {
                     LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.heightIn(max = 250.dp)
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.heightIn(max = 140.dp)
+                    ) {
+                        items(discoveredPeers) { peer ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(Color(0xFF08182B))
+                                    .border(1.dp, Color(0xFF00D9FF).copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        viewModel.linkPhysicalPeer(peer)
+                                        val dummy = FleetMemberEntity(
+                                            id = peer.nodeId,
+                                            businessId = "mesh_p2p",
+                                            userId = peer.nodeId,
+                                            role = peer.role,
+                                            email = "${peer.nodeId.lowercase()}@mesh.direct",
+                                            inviteStatus = "ACCEPTED",
+                                            joinedAt = System.currentTimeMillis()
+                                        )
+                                        onSelectPartner(dummy)
+                                    }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF00D9FF).copy(alpha = 0.2f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("⚡", fontSize = 12.sp)
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(peer.deviceName, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text("${peer.nodeId} · IP: ${peer.ipAddress}", color = Color(0xFF80D8FF), fontSize = 9.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // ── Miembros de flota regulares ──
+                Text(
+                    text = "MIEMBROS DE LA FLOTA (NUBE):",
+                    color = MeetColors.textSecondary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp
+                )
+
+                if (members.isEmpty()) {
+                    Text("No hay conductores en la nube registrados.", color = MeetColors.textSecondary, fontSize = 10.sp)
+                } else {
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.heightIn(max = 120.dp)
                     ) {
                         items(members) { member ->
                             Row(
@@ -1022,22 +1409,22 @@ fun NewChatDialog(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(MeetColors.backgroundDeep)
                                     .clickable { onSelectPartner(member) }
-                                    .padding(10.dp),
+                                    .padding(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .size(32.dp)
+                                        .size(28.dp)
                                         .clip(CircleShape)
                                         .background(MeetColors.electricBlue.copy(alpha = 0.2f)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    AnimatedNeonIcon(Icons.Default.Person, contentDescription = null, tint = MeetColors.electricBlue, modifier = Modifier.size(16.dp))
+                                    AnimatedNeonIcon(Icons.Default.Person, contentDescription = null, tint = MeetColors.electricBlue, modifier = Modifier.size(14.dp))
                                 }
-                                Spacer(modifier = Modifier.width(10.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Column {
-                                    Text(member.userId, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    Text(member.email, color = MeetColors.textSecondary, fontSize = 11.sp)
+                                    Text(member.userId, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    Text(member.email, color = MeetColors.textSecondary, fontSize = 9.5.sp)
                                 }
                             }
                         }
@@ -1053,3 +1440,142 @@ fun NewChatDialog(
         containerColor = MeetColors.backgroundDark
     )
 }
+
+@Composable
+fun MeshOfflineQrDialog(
+    viewModel: FleetChatViewModel,
+    onDismiss: () -> Unit,
+    onSuccessLink: () -> Unit
+) {
+    val localIp by ElysiumMeshGovernance.localIpAddress.collectAsState()
+    val qrPayload = remember(localIp) { ElysiumPhysicalMeshEngine.createOfflineQrPayload() }
+    var targetInput by remember { mutableStateOf("") }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var isConnecting by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("📱", fontSize = 18.sp)
+                Text("QR Mesh P2P (100% Offline)", color = Color(0xFF00D9FF), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "No requiere internet ni señal móvil. Muestra este código o ingresa la IP local del otro teléfono.",
+                    color = MeetColors.textSecondary,
+                    fontSize = 10.5.sp,
+                    textAlign = TextAlign.Center
+                )
+
+                // QR Code Image (Offline)
+                Box(
+                    modifier = Modifier
+                        .size(190.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White)
+                        .padding(8.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    QrCodeImage(
+                        text = qrPayload,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF081220))
+                        .padding(8.dp)
+                ) {
+                    Text(
+                        text = "TU NODO: ${ElysiumPhysicalMeshEngine.localNodeId}",
+                        color = Color(0xFF00D9FF),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 9.5.sp
+                    )
+                    Text(
+                        text = "TU IP LOCAL: ${localIp ?: "Sin IP (Conecta Wi-Fi o comparte Hotspot)"}",
+                        color = Color.White,
+                        fontSize = 9.sp
+                    )
+                }
+
+                // Input para conectar por IP o QR
+                OutlinedTextField(
+                    value = targetInput,
+                    onValueChange = {
+                        targetInput = it
+                        errorMessage = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("IP (ej: 192.168.1.15) o código QR", color = MeetColors.textSecondary, fontSize = 11.sp) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = Color(0xFF00D9FF),
+                        unfocusedBorderColor = Color(0xFF1B2D45),
+                        focusedContainerColor = Color(0xFF060D17),
+                        unfocusedContainerColor = Color(0xFF060D17),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    )
+                )
+
+                if (errorMessage != null) {
+                    Text(
+                        text = errorMessage!!,
+                        color = Color(0xFFFF5252),
+                        fontSize = 9.5.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                Button(
+                    onClick = {
+                        if (targetInput.isBlank()) {
+                            errorMessage = "Ingresa la IP del otro teléfono"
+                            return@Button
+                        }
+                        isConnecting = true
+                        viewModel.linkPeerByIpOrPayload(targetInput) { ok, msg ->
+                            isConnecting = false
+                            if (ok) {
+                                onDismiss()
+                                onSuccessLink()
+                            } else {
+                                errorMessage = msg
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(38.dp),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF39FF66))
+                ) {
+                    if (isConnecting) {
+                        CircularProgressIndicator(color = Color.Black, modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    } else {
+                        Text("⚡ ENLAZAR POR IP DIRECTA", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 10.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cerrar", color = Color(0xFF00D9FF))
+            }
+        },
+        containerColor = Color(0xFF060E1A)
+    )
+}
+

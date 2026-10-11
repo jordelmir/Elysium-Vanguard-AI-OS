@@ -341,6 +341,33 @@ interface ChatDao {
 
     @Query("SELECT COUNT(*) FROM chat_messages WHERE receiverId = :userId AND status != 'READ'")
     fun observeUnreadCount(userId: String): Flow<Int>
+
+    // Universal Direct / Mesh conversations without business restriction
+    @Query("""
+        SELECT * FROM chat_messages 
+        WHERE (
+            (senderId IN (:userA, 'local_owner') AND receiverId = :userB) 
+            OR (senderId = :userB AND receiverId IN (:userA, 'local_owner'))
+            OR (senderId = :userA AND receiverId = :userB)
+            OR (senderId = :userB AND receiverId = :userA)
+        ) 
+        ORDER BY timestamp ASC
+    """)
+    fun getChatHistoryAnyBusiness(userA: String, userB: String): Flow<List<ChatMessageEntity>>
+
+    @Query("""
+        SELECT * FROM chat_messages 
+        WHERE (
+            senderId = :userId OR receiverId = :userId 
+            OR senderId = 'local_owner' OR receiverId = 'local_owner'
+        )
+        GROUP BY CASE 
+            WHEN senderId = :userId OR senderId = 'local_owner' THEN receiverId 
+            ELSE senderId 
+        END
+        ORDER BY timestamp DESC
+    """)
+    fun getAllRecentChats(userId: String): Flow<List<ChatMessageEntity>>
 }
 
 @Dao
