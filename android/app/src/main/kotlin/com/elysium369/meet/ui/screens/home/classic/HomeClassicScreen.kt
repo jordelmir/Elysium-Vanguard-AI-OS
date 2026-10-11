@@ -528,7 +528,8 @@ fun HomeClassicScreen(
             // ── Elysium Mesh Master Dock (Governs Wi-Fi, Bluetooth & Dual Sync) ──
             AnimatedEntrance(5) {
                 com.elysium369.meet.ui.components.ElysiumMeshMasterDock(
-                    modifier = Modifier.padding(bottom = 6.dp)
+                    modifier = Modifier.padding(bottom = 6.dp),
+                    navController = navController
                 )
             }
 

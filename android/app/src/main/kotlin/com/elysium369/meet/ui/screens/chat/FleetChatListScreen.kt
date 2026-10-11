@@ -52,6 +52,7 @@ fun FleetChatListScreen(
     navController: NavController,
     viewModel: FleetChatViewModel,
     businessId: String,
+    initialTab: Int = 2,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -72,8 +73,8 @@ fun FleetChatListScreen(
     val vehicles by viewModel.vehiclesForActiveBusiness.collectAsState(initial = emptyList())
     val recentChats by viewModel.recentChats.collectAsState(initial = emptyList())
 
-    // Tabs state
-    var selectedTab by remember { mutableStateOf(0) }
+    // Tabs state (por defecto pestaña 2: Radar Mesh & Chat)
+    var selectedTab by remember { mutableStateOf(initialTab) }
 
     // Dialog & Form states
     var showCreateBusinessDialog by remember { mutableStateOf(false) }
@@ -84,7 +85,7 @@ fun FleetChatListScreen(
         containerColor = MeetColors.backgroundDeep,
         topBar = {
             EliteTopAppBar(
-                title = "Ecosistema de Flotas",
+                title = if (selectedTab == 2) "Radar Mesh & Chat Flota" else "Ecosistema de Flotas",
                 onBackClick = onBack
             )
         }
@@ -119,7 +120,7 @@ fun FleetChatListScreen(
                 Tab(
                     selected = selectedTab == 2,
                     onClick = { selectedTab = 2 },
-                    text = { Text("Mensajería / DVIR", fontWeight = FontWeight.Bold) }
+                    text = { Text("⚡ Radar Mesh & Chat", fontWeight = FontWeight.Bold) }
                 )
             }
 
@@ -882,12 +883,35 @@ fun MessagingTabContent(
                     }
                 }
 
+                // Banner guía explícito de Enlace con 1-Toque
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color(0xFF003822).copy(alpha = 0.55f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF39FF66).copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text("⚡", fontSize = 13.sp)
+                        Text(
+                            text = "Enlace con 1 Toque: Presiona [⚡ ESCANEAR RADAR MESH]. El otro dispositivo aparecerá en la lista de nodos descubiertos. Pulsa [⚡ ENLAZAR 1-TOQUE] y entrarás directamente al chat.",
+                            color = Color(0xFFD4FFD4),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Medium,
+                            lineHeight = 12.sp
+                        )
+                    }
+                }
+
                 // ── Los 2 Botones Maestros de Conexión ──
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Botón 1: ESCANEAR RADAR
+                    // Botón 1: ESCANEAR RADAR MESH
                     Button(
                         onClick = {
                             isScanningRadar = true
@@ -899,25 +923,31 @@ fun MessagingTabContent(
                             }
                         },
                         modifier = Modifier
-                            .weight(1f)
-                            .height(38.dp),
+                            .weight(1.3f)
+                            .height(40.dp),
                         shape = RoundedCornerShape(10.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = if (isScanningRadar) Color(0xFF00838F) else Color(0xFF00B0FF)
                         )
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                             if (isScanningRadar) {
-                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(15.dp), strokeWidth = 2.dp)
+                                Text(
+                                    text = "ESCANEANDO...",
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 10.sp
+                                )
                             } else {
                                 Text("⚡", fontSize = 12.sp)
+                                Text(
+                                    text = "ESCANEAR RADAR MESH",
+                                    color = Color.Black,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 10.sp
+                                )
                             }
-                            Text(
-                                text = if (isScanningRadar) "BUSCANDO..." else "ESCANEAR RADAR",
-                                color = Color.Black,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 10.sp
-                            )
                         }
                     }
 
@@ -925,40 +955,52 @@ fun MessagingTabContent(
                     OutlinedButton(
                         onClick = { showQrMeshDialog = true },
                         modifier = Modifier
-                            .weight(1f)
-                            .height(38.dp),
+                            .weight(0.9f)
+                            .height(40.dp),
                         shape = RoundedCornerShape(10.dp),
                         border = androidx.compose.foundation.BorderStroke(1.2.dp, Color(0xFF00D9FF)),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00D9FF))
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("📱", fontSize = 12.sp)
-                            Text("QR MESH P2P", fontWeight = FontWeight.Bold, fontSize = 10.sp)
+                            Text("QR MESH P2P", fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
                         }
                     }
                 }
 
                 // ── Lista de Pares Físicos Descubiertos (Enlace 1-Toque) ──
-                if (discoveredPeers.isNotEmpty()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 4.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = "DISPOSITIVOS DETECTADOS (1-TOQUE PARA ENLAZAR):",
                             color = Color(0xFF39FF66),
                             fontWeight = FontWeight.Black,
-                            fontSize = 9.sp
+                            fontSize = 9.5.sp
                         )
+                        Text(
+                            text = if (discoveredPeers.isNotEmpty()) "${discoveredPeers.size} EN ALCANCE" else "A LA ESCUCHA",
+                            color = if (discoveredPeers.isNotEmpty()) Color(0xFF39FF66) else MeetColors.textMuted,
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
 
+                    if (discoveredPeers.isNotEmpty()) {
                         discoveredPeers.forEach { peer ->
                             Surface(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(10.dp),
                                 color = Color(0xFF0B1728),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00E5FF).copy(alpha = 0.4f))
+                                border = androidx.compose.foundation.BorderStroke(1.2.dp, Color(0xFF00E5FF).copy(alpha = 0.6f))
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -970,13 +1012,13 @@ fun MessagingTabContent(
                                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                         Box(
                                             modifier = Modifier
-                                                .size(32.dp)
+                                                .size(34.dp)
                                                 .clip(CircleShape)
                                                 .background(Color(0xFF00E5FF).copy(alpha = 0.2f))
                                                 .border(1.dp, Color(0xFF00E5FF), CircleShape),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            Text("📡", fontSize = 14.sp)
+                                            Text("📡", fontSize = 15.sp)
                                         }
                                         Column {
                                             Text(
@@ -1001,16 +1043,55 @@ fun MessagingTabContent(
                                         shape = RoundedCornerShape(8.dp),
                                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF39FF66)),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                        modifier = Modifier.height(30.dp)
+                                        modifier = Modifier.height(32.dp)
                                     ) {
-                                        Text(
-                                            text = "ENLAZAR 1-TOQUE",
-                                            color = Color.Black,
-                                            fontWeight = FontWeight.Black,
-                                            fontSize = 9.sp
-                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text("⚡", fontSize = 10.sp, color = Color.Black)
+                                            Text(
+                                                text = "ENLAZAR 1-TOQUE",
+                                                color = Color.Black,
+                                                fontWeight = FontWeight.Black,
+                                                fontSize = 9.sp
+                                            )
+                                        }
                                     }
                                 }
+                            }
+                        }
+                    } else {
+                        // Tarjeta de estado y guía de enlace si no hay nodos todavía
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF08121E),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF162A45))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text("📡", fontSize = 13.sp)
+                                    Text(
+                                        text = "Ningún nodo detectado en alcance aún",
+                                        color = Color(0xFF00E5FF),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                                Text(
+                                    text = "1. Conecta ambos teléfonos a la misma red Wi-Fi (o crea un Hotspot).\n2. Abre MEET en ambos y presiona [⚡ ESCANEAR RADAR MESH].\n3. Aparecerá aquí el dispositivo con el botón [⚡ ENLAZAR 1-TOQUE].",
+                                    color = MeetColors.textSecondary,
+                                    fontSize = 9.sp,
+                                    lineHeight = 12.sp,
+                                    textAlign = TextAlign.Center
+                                )
                             }
                         }
                     }

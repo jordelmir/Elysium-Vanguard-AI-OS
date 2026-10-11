@@ -306,7 +306,7 @@ fun HomeAdaptiveScreen(
             }
 
             // ── Elysium Mesh Master Dock (Governs Wi-Fi, Bluetooth & Dual Sync) ──
-            com.elysium369.meet.ui.components.ElysiumMeshMasterDock()
+            com.elysium369.meet.ui.components.ElysiumMeshMasterDock(navController = navController)
 
             if (userProfile == "ride_passenger") {
                 // ── Passenger Mobility Hero Card (Ride-Centric Home Screen) ──

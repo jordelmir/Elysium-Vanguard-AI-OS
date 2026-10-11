@@ -95,9 +95,45 @@ fun FleetChatDetailScreen(
         }
     }
 
+    val activeLinkedPeer by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeLinkedPeer.collectAsState()
+    LaunchedEffect(partner, activeLinkedPeer) {
+        if (partner == null && activeLinkedPeer != null) {
+            activeLinkedPeer?.let { peer ->
+                viewModel.linkPhysicalPeer(peer)
+            }
+        }
+    }
+
     if (partner == null) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator(color = MeetColors.electricBlue)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MeetColors.backgroundDeep)
+                .padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                CircularProgressIndicator(color = MeetColors.electricBlue, strokeWidth = 3.dp)
+                Text(
+                    text = "Conectando con nodo P2P...",
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Text(
+                    text = "Si no se conecta automáticamente, regresa y pulsa [⚡ ENLAZAR 1-TOQUE] en el dispositivo detectado.",
+                    color = MeetColors.textSecondary,
+                    fontSize = 11.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                EliteButton(
+                    text = "Volver a la lista de Nodos",
+                    onClick = onBack
+                )
+            }
         }
         return
     }

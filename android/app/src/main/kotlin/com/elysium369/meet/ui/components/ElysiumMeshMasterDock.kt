@@ -24,9 +24,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
+import androidx.navigation.NavController
 import com.elysium369.meet.core.mesh.ElysiumMeshGovernance
+import com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine
 import com.elysium369.meet.core.mesh.MeshTransportLevel
+import com.elysium369.meet.core.mesh.PhysicalMeshPeer
 import com.elysium369.meet.ui.theme.MeetColors
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * ══════════════════════════════════════════════════════════════════════
@@ -43,8 +49,13 @@ import com.elysium369.meet.ui.theme.MeetColors
  */
 @Composable
 fun ElysiumMeshMasterDock(
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    navController: NavController? = null
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var isScanningRadar by remember { mutableStateOf(false) }
+
     val isWifiOn by ElysiumMeshGovernance.isWifiMeshEnabled.collectAsState()
     val isBleOn by ElysiumMeshGovernance.isBleMeshEnabled.collectAsState()
     val isDualOn by ElysiumMeshGovernance.isDualSyncEnabled.collectAsState()
@@ -337,6 +348,193 @@ fun ElysiumMeshMasterDock(
                         fontWeight = FontWeight.Bold,
                         fontSize = 10.sp
                     )
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // ── Controles Rápidos de Radar & Enlace 1-Toque en el Home ──
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = {
+                        isScanningRadar = true
+                        ElysiumPhysicalMeshEngine.triggerQuickDiscovery()
+                        ElysiumMeshGovernance.refreshHardwareState(context)
+                        coroutineScope.launch {
+                            delay(1200)
+                            isScanningRadar = false
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1.3f)
+                        .height(38.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isScanningRadar) Color(0xFF00838F) else Color(0xFF00B0FF)
+                    )
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (isScanningRadar) {
+                            CircularProgressIndicator(
+                                color = Color.White,
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text("BUSCANDO...", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 9.5.sp)
+                        } else {
+                            Text("⚡", fontSize = 11.sp)
+                            Text("ESCANEAR RADAR MESH", color = Color.Black, fontWeight = FontWeight.Black, fontSize = 9.sp)
+                        }
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        navController?.navigate("fleet_chat_list/b1")
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(38.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.2.dp, Color(0xFF00D9FF)),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00D9FF))
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("💬", fontSize = 11.sp)
+                        Text("ABRIR CHAT", fontWeight = FontWeight.Bold, fontSize = 9.5.sp)
+                    }
+                }
+            }
+
+            // ── Panel Reactivo de Nodos Físicos Descubiertos (Enlace 1-Toque) ──
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "DISPOSITIVOS DETECTADOS (1-TOQUE PARA ENLAZAR):",
+                        color = Color(0xFF39FF66),
+                        fontWeight = FontWeight.Black,
+                        fontSize = 9.sp
+                    )
+                    Text(
+                        text = if (discoveredPeers.isNotEmpty()) "${discoveredPeers.size} EN ALCANCE" else "A LA ESCUCHA",
+                        color = if (discoveredPeers.isNotEmpty()) Color(0xFF39FF66) else MeetColors.textMuted,
+                        fontSize = 8.5.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                if (discoveredPeers.isNotEmpty()) {
+                    discoveredPeers.forEach { peer ->
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF0D1B2D),
+                            border = BorderStroke(1.2.dp, Color(0xFF00F0FF).copy(alpha = 0.5f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF00F0FF).copy(alpha = 0.2f))
+                                            .border(1.dp, Color(0xFF00F0FF), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("📡", fontSize = 12.sp)
+                                    }
+                                    Column {
+                                        Text(
+                                            text = peer.deviceName,
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                        Text(
+                                            text = "IP: ${peer.ipAddress}:${peer.port}",
+                                            color = Color(0xFF80D8FF),
+                                            fontSize = 8.sp
+                                        )
+                                    }
+                                }
+
+                                Button(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            ElysiumPhysicalMeshEngine.linkPeerOneTouch(peer)
+                                            navController?.navigate("fleet_chat_detail")
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF39FF66)),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(28.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text("⚡", fontSize = 9.sp, color = Color.Black)
+                                        Text(
+                                            text = "ENLAZAR 1-TOQUE",
+                                            color = Color.Black,
+                                            fontWeight = FontWeight.Black,
+                                            fontSize = 8.5.sp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFF0B1422),
+                        border = BorderStroke(0.8.dp, Color(0xFF16253B))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("📡", fontSize = 12.sp)
+                            Text(
+                                text = "Radar a la escucha · Pulsa [⚡ ESCANEAR RADAR MESH] en ambos teléfonos para enlazar con 1-Toque.",
+                                color = MeetColors.textSecondary,
+                                fontSize = 8.5.sp,
+                                lineHeight = 11.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
                 }
             }
         }

@@ -881,14 +881,53 @@ fun MeetApp(
                     navController = navController,
                     viewModel = chatViewModel,
                     businessId = businessId,
+                    initialTab = 2,
+                    onBack = { navController.backOrHome() }
+                )
+            }
+            composable("fleet_chat_list") {
+                val chatViewModel: FleetChatViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+                FleetChatListScreen(
+                    navController = navController,
+                    viewModel = chatViewModel,
+                    businessId = "b1",
+                    initialTab = 2,
+                    onBack = { navController.backOrHome() }
+                )
+            }
+            composable("messages") {
+                val chatViewModel: FleetChatViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+                FleetChatListScreen(
+                    navController = navController,
+                    viewModel = chatViewModel,
+                    businessId = "b1",
+                    initialTab = 2,
+                    onBack = { navController.backOrHome() }
+                )
+            }
+            composable("mesh_chat") {
+                val chatViewModel: FleetChatViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+                FleetChatListScreen(
+                    navController = navController,
+                    viewModel = chatViewModel,
+                    businessId = "b1",
+                    initialTab = 2,
                     onBack = { navController.backOrHome() }
                 )
             }
             composable("fleet_chat_detail") { backStack ->
                 val parentEntry = remember(backStack) {
-                    navController.getBackStackEntry("fleet_chat_list/{businessId}")
+                    try {
+                        navController.getBackStackEntry("fleet_chat_list/{businessId}")
+                    } catch (e: Exception) {
+                        null
+                    }
                 }
-                val chatViewModel: FleetChatViewModel = androidx.hilt.navigation.compose.hiltViewModel(parentEntry)
+                val chatViewModel: FleetChatViewModel = if (parentEntry != null) {
+                    androidx.hilt.navigation.compose.hiltViewModel(parentEntry)
+                } else {
+                    androidx.hilt.navigation.compose.hiltViewModel()
+                }
                 FleetChatDetailScreen(
                     viewModel = chatViewModel,
                     onBack = { navController.backOrHome() },
