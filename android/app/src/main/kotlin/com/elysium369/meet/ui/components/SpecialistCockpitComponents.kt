@@ -938,49 +938,230 @@ fun SpecialistWalletCard(
                 }
             }
 
-            // SINPE Móvil Reference Box
+            val context = LocalContext.current
+            val coroutineScope = rememberCoroutineScope()
+            var isRequestingAdvance by remember { mutableStateOf(false) }
+            var advanceMessage by remember { mutableStateOf<String?>(null) }
+
+            // ── LÍNEA DE PRÉSTAMO OPERATIVO ELYSIUM ──
             Surface(
                 color = MeetColors.backgroundDark,
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, MeetColors.cyberCyan.copy(alpha = 0.35f)),
+                shape = RoundedCornerShape(14.dp),
+                border = BorderStroke(
+                    1.dp,
+                    if (walletState.isOperativeSuspended) MeetColors.error
+                    else if (walletState.canRequestAdvance) MeetColors.neonGreen
+                    else MeetColors.cyberCyan.copy(alpha = 0.5f)
+                ),
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Row(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("📱", fontSize = 16.sp)
-                        Column {
-                            Text(
-                                text = "SINPE Móvil Oficial: ${SpecialistWalletStore.SINPE_PHONE}",
-                                color = Color.White,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 11.sp,
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text("⚡", fontSize = 16.sp)
+                            Column {
+                                Text(
+                                    text = "LÍNEA DE PRÉSTAMO OPERATIVO",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.sp,
+                                    letterSpacing = 0.5.sp,
+                                )
+                                Text(
+                                    text = "Fondo de Respaldo Transitorio (Tranches de ₡3,000 CRC)",
+                                    color = MeetColors.cyberCyan,
+                                    fontSize = 9.sp,
+                                )
+                            }
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (walletState.isOperativeSuspended) MeetColors.error.copy(alpha = 0.2f)
+                                else if (walletState.canRequestAdvance) MeetColors.neonGreen.copy(alpha = 0.2f)
+                                else MeetColors.cyberCyan.copy(alpha = 0.2f),
+                            border = BorderStroke(
+                                1.dp,
+                                if (walletState.isOperativeSuspended) MeetColors.error
+                                else if (walletState.canRequestAdvance) MeetColors.neonGreen
+                                else MeetColors.cyberCyan
                             )
+                        ) {
                             Text(
-                                text = "${SpecialistWalletStore.SINPE_RECIPIENT_NAME} · ${SpecialistWalletStore.SINPE_EMAIL}",
-                                color = MeetColors.cyberCyan,
-                                fontSize = 9.sp,
+                                text = if (walletState.isOperativeSuspended) "PAUSA OPERATIVA · PAGO REQUERIDO"
+                                    else if (walletState.canRequestAdvance) "PRÉSTAMO DISPONIBLE (SALDO ≤ ₡400)"
+                                    else "SALDO SUFICIENTE (> ₡400)",
+                                color = if (walletState.isOperativeSuspended) MeetColors.error
+                                    else if (walletState.canRequestAdvance) MeetColors.neonGreen
+                                    else MeetColors.cyberCyan,
+                                fontSize = 8.sp,
+                                fontWeight = FontWeight.Black,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
                     }
+
+                    // Balance and Debt Metrics
+                    Surface(
+                        color = Color(0xFF07111D),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFF132B45)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "DEUDA ACUMULADA TOTAL",
+                                    color = MeetColors.textSecondary,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "₡${String.format("%,d", walletState.accumulatedAdvanceDebtCrc)} CRC",
+                                    color = if (walletState.accumulatedAdvanceDebtCrc > 0L) Color(0xFFFFB300) else Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                                Text(
+                                    text = "Tranches acumulativos de ₡3,000",
+                                    color = MeetColors.textMuted,
+                                    fontSize = 8.sp
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(
+                                    text = "CONDICIÓN DE SOLICITUD",
+                                    color = MeetColors.textSecondary,
+                                    fontSize = 8.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = if (walletState.balanceCrc <= 400L) "ELEGIBLE (≤ ₡400)" else "BLOQUEADO (> ₡400)",
+                                    color = if (walletState.balanceCrc <= 400L) MeetColors.neonGreen else MeetColors.cyberCyan,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                                Text(
+                                    text = "Saldo actual: ₡${String.format("%,d", walletState.balanceCrc)}",
+                                    color = MeetColors.textMuted,
+                                    fontSize = 8.sp
+                                )
+                            }
+                        }
+                    }
+
+                    // Institutional Transparent Contract
                     Text(
-                        text = "Verificado",
-                        color = MeetColors.neonGreen,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 9.sp,
+                        text = "🛡️ Contrato de Préstamo Operativo: Solo puedes pedir prestado cuando tu saldo sea de ₡400 CRC o menor. Cada solicitud te recarga exactamente ₡3,000 CRC para continuar recibiendo y completando servicios. La deuda se va sumando en tu cuenta (puede acumular millones). Al momento de vincular la Cuenta Bancaria Empresarial Oficial de Elysium, deberás liquidar la deuda acumulada para continuar trabajando, o tu cuenta entrará en pausa operativa temporal hasta saldarla.",
+                        color = MeetColors.textMuted,
+                        fontSize = 8.5.sp,
+                        lineHeight = 11.5.sp
                     )
+
+                    // Feedback message
+                    advanceMessage?.let { msg ->
+                        Text(
+                            text = msg,
+                            color = MeetColors.neonGreen,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // Actions
+                    if (walletState.canRequestAdvance) {
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    isRequestingAdvance = true
+                                    try {
+                                        SpecialistWalletStore.requestOperativeAdvance(
+                                            context = context,
+                                            specialistId = walletState.specialistId,
+                                            serviceVertical = walletState.serviceVertical,
+                                            amountCrc = 3000L
+                                        )
+                                        advanceMessage = "✓ Préstamo de ₡3,000 CRC acreditado exitosamente al saldo. Deuda acumulada registrada."
+                                    } catch (e: Exception) {
+                                        advanceMessage = "Error: ${e.message}"
+                                    } finally {
+                                        isRequestingAdvance = false
+                                    }
+                                }
+                            },
+                            enabled = !isRequestingAdvance,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MeetColors.neonGreen,
+                                contentColor = Color.Black
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text(
+                                text = if (isRequestingAdvance) "PROCESANDO PRÉSTAMO..." else "⚡ PEDIR PRESTADO (+₡3,000 CRC) · SALDO ≤ ₡400",
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp
+                            )
+                        }
+                    } else if (walletState.balanceCrc > 400L && !walletState.isOperativeSuspended) {
+                        Surface(
+                            color = Color(0xFF091726),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, MeetColors.cyberCyan.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("ℹ️", fontSize = 12.sp)
+                                Text(
+                                    text = "Tienes saldo suficiente (₡${String.format("%,d", walletState.balanceCrc)} CRC). Podrás pedir el siguiente préstamo de ₡3,000 CRC cuando tu saldo sea ≤ ₡400 CRC.",
+                                    color = MeetColors.cyberCyan,
+                                    fontSize = 8.5.sp,
+                                    lineHeight = 11.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                        }
+                    } else if (walletState.isOperativeSuspended) {
+                        Surface(
+                            color = MeetColors.error.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, MeetColors.error),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "⛔ PAUSA OPERATIVA: Cuenta empresarial oficial vinculada. Tienes una deuda acumulada de ₡${String.format("%,d", walletState.accumulatedAdvanceDebtCrc)} CRC pendiente. Debes liquidar el saldo adeudado para reactivar la asignación de clientes.",
+                                color = MeetColors.error,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
                 }
             }
 
-            // Action Button: Recharge Balance
+            // Action Button: Open Topup & Trust Center
             Button(
                 onClick = onRechargeClick,
                 modifier = Modifier.fillMaxWidth(),
@@ -997,7 +1178,7 @@ fun SpecialistWalletCard(
                 ) {
                     Icon(Icons.Default.AddCard, contentDescription = null, modifier = Modifier.size(16.dp))
                     Text(
-                        text = "RECARGAR SALDO CON SINPE MÓVIL",
+                        text = "GESTIÓN DE SALDO Y ADELANTOS OPERATIVOS",
                         fontWeight = FontWeight.Black,
                         fontSize = 11.sp,
                         letterSpacing = 0.5.sp,
@@ -1122,13 +1303,13 @@ fun SpecialistSinpeTopupDialog(
                 Text("💰", fontSize = 20.sp)
                 Column {
                     Text(
-                        "Recargar Saldo Operativo (SINPE)",
+                        "Gestión de Saldo y Adelantos Operativos",
                         fontWeight = FontWeight.Black,
                         fontSize = 15.sp,
                         color = Color.White,
                     )
                     Text(
-                        "$serviceTitle · Validación Trust Center",
+                        "$serviceTitle · Fideicomiso & Trust Center",
                         fontSize = 10.sp,
                         color = MeetColors.cyberCyan,
                     )
@@ -1140,7 +1321,7 @@ fun SpecialistSinpeTopupDialog(
                 modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Official SINPE Móvil Banner
+                // Institutional Enterprise & Advance Banner
                 Surface(
                     color = MeetColors.cardBackground,
                     shape = RoundedCornerShape(12.dp),
@@ -1149,29 +1330,101 @@ fun SpecialistSinpeTopupDialog(
                 ) {
                     Column(
                         modifier = Modifier.padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Text(
-                            "📱 SINPE Móvil: ${SpecialistWalletStore.SINPE_PHONE}",
+                            "🏢 ${SpecialistWalletStore.ENTERPRISE_ENTITY_NAME}",
                             fontWeight = FontWeight.Black,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             color = Color.White,
                         )
                         Text(
-                            "👤 Destinatario: ${SpecialistWalletStore.SINPE_RECIPIENT_NAME}",
+                            "⚡ ${SpecialistWalletStore.ENTERPRISE_STATUS_NOTICE}",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             color = MeetColors.neonGreen,
                         )
                         Text(
-                            "✉️ Correo vinculado: ${SpecialistWalletStore.SINPE_EMAIL}",
-                            fontSize = 10.sp,
-                            color = MeetColors.cyberCyan,
-                        )
-                        Text(
-                            "El creador valida el ingreso en su cuenta bancaria en el Trust Center para liberar el saldo.",
+                            "🛡️ Fondo de Respaldo: Préstamos operativos en tramos de ₡3,000 CRC cuando tu saldo sea ≤ ₡400 CRC. Queda registrado como deuda acumulada en tu cuenta (puede acumular millones). Al activarse la cuenta bancaria empresarial oficial de Elysium, deberás liquidar la deuda acumulada para continuar trabajando o tu cuenta entrará en suspensión temporal.",
                             fontSize = 9.sp,
-                            color = MeetColors.warning,
+                            color = MeetColors.textSecondary,
+                            lineHeight = 11.5.sp,
+                        )
+                    }
+                }
+
+                // Botón de Préstamo Inmediato dentro del Dialog
+                val walletStateFlow = remember { SpecialistWalletStore.getWalletFlow(context, specialistId, serviceVertical) }
+                val currentWalletState by walletStateFlow.collectAsState()
+                if (currentWalletState.canRequestAdvance) {
+                    Surface(
+                        color = MeetColors.neonGreen.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, MeetColors.neonGreen),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                "⚡ ¿Necesitas recargar saldo para trabajar de inmediato?",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp
+                            )
+                            Text(
+                                "Tu saldo actual es de ₡${currentWalletState.balanceCrc} CRC (≤ ₡400). Deuda acumulada registrada: ₡${String.format("%,d", currentWalletState.accumulatedAdvanceDebtCrc)} CRC. Puedes solicitar un préstamo de ₡3,000 CRC ahora.",
+                                color = MeetColors.textSecondary,
+                                fontSize = 9.sp
+                            )
+                            Button(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        isSubmitting = true
+                                        try {
+                                            SpecialistWalletStore.requestOperativeAdvance(
+                                                context = context,
+                                                specialistId = specialistId,
+                                                serviceVertical = serviceVertical,
+                                                amountCrc = 3000L
+                                            )
+                                            onTopupSubmitted(3000L, "PRESTAMO-3000-INMEDIATO")
+                                            onDismiss()
+                                        } finally {
+                                            isSubmitting = false
+                                        }
+                                    }
+                                },
+                                enabled = !isSubmitting,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MeetColors.neonGreen,
+                                    contentColor = Color.Black
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    if (isSubmitting) "PROCESANDO PRÉSTAMO..." else "⚡ PEDIR PRESTADO (+₡3,000 CRC)",
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                    }
+                } else if (!currentWalletState.isOperativeSuspended) {
+                    Surface(
+                        color = Color(0xFF091726),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, MeetColors.cyberCyan.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "ℹ️ Saldo actual: ₡${String.format("%,d", currentWalletState.balanceCrc)} CRC. El préstamo de ₡3,000 CRC estará disponible cuando tu saldo sea ≤ ₡400 CRC.",
+                            color = MeetColors.cyberCyan,
+                            fontSize = 8.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(8.dp)
                         )
                     }
                 }

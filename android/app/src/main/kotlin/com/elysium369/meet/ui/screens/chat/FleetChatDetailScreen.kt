@@ -7,6 +7,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
@@ -60,7 +61,12 @@ fun FleetChatDetailScreen(
 
     var textInput by remember { mutableStateOf("") }
     var showReportDialog by remember { mutableStateOf(false) }
+    var selectedImageForPreview by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
+
+    val activeVoiceCall by viewModel.activeVoiceCall.collectAsState()
+    val activeVideoCall by viewModel.activeVideoCall.collectAsState()
+    val meshRoute by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeRoute.collectAsState()
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -101,6 +107,20 @@ fun FleetChatDetailScreen(
                 title = partner?.userId ?: "Chat",
                 onBackClick = onBack,
                 actions = {
+                    IconButton(onClick = { viewModel.startVoiceCall() }) {
+                        AnimatedNeonIcon(
+                            imageVector = Icons.Default.Phone,
+                            contentDescription = "Llamada de voz Mesh",
+                            tint = MeetColors.neonGreen
+                        )
+                    }
+                    IconButton(onClick = { viewModel.startVideoCall() }) {
+                        AnimatedNeonIcon(
+                            imageVector = Icons.Default.Videocam,
+                            contentDescription = "Videollamada Mesh",
+                            tint = MeetColors.cyberCyan
+                        )
+                    }
                     IconButton(onClick = { showReportDialog = true }) {
                         AnimatedNeonIcon(
                             imageVector = Icons.Default.Flag,
@@ -123,7 +143,347 @@ fun FleetChatDetailScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color(0xFF070B14),
+                            Color(0xFF091222),
+                            Color(0xFF05080E)
+                        )
+                    )
+                )
         ) {
+            // ── Mesh Route Status Pill (WhatsApp / Elysium Telemetry) ──
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF0A1424),
+                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF162A45))
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(meshRoute.badgeIcon, fontSize = 12.sp)
+                        Text(
+                            text = "Canal: ${meshRoute.displayName}",
+                            color = Color(0xFF00D9FF),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    }
+                    Text(
+                        text = "E2EE Simulado · Sin Nube",
+                        color = MeetColors.textMuted,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+
+            // ── Banner de Llamada de Voz Mesh en Vivo (si está activa) ──
+            activeVoiceCall?.let { call ->
+                val min = call.durationSeconds / 60
+                val sec = call.durationSeconds % 60
+                val durationStr = String.format("%02d:%02d", min, sec)
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xFF0A1828),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF39FF66)),
+                    shadowElevation = 8.dp
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Box(
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF39FF66).copy(alpha = 0.2f))
+                                    .border(1.dp, Color(0xFF39FF66), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text("📞", fontSize = 16.sp)
+                            }
+                            Column {
+                                Text("LLAMADA MESH EN VIVO", color = Color(0xFF39FF66), fontWeight = FontWeight.Black, fontSize = 11.sp)
+                                Text("$durationStr · ${call.route.displayName}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                        }
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { viewModel.toggleCallMute() },
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(if (call.isMuted) Color(0xFFFF3366) else Color(0xFF14243B))
+                            ) {
+                                Icon(
+                                    imageVector = if (call.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                                    contentDescription = "Mute",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = { viewModel.endVoiceCall() },
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFFF1744))
+                            ) {
+                                Icon(Icons.Default.CallEnd, contentDescription = "Colgar", tint = Color.White, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Visor de Videollamada Mesh en Vivo P2P (si está activa) ──
+            activeVideoCall?.let { call ->
+                val min = call.durationSeconds / 60
+                val sec = call.durationSeconds % 60
+                val durationStr = String.format("%02d:%02d", min, sec)
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(18.dp),
+                    color = Color(0xFF060D1A),
+                    border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF00D9FF)),
+                    shadowElevation = 12.dp
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        // Header del Stream
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF00D9FF).copy(alpha = 0.2f))
+                                        .border(1.dp, Color(0xFF00D9FF), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("📹", fontSize = 15.sp)
+                                }
+                                Column {
+                                    Text("VIDEOLLAMADA MESH EN VIVO", color = Color(0xFF00D9FF), fontWeight = FontWeight.Black, fontSize = 11.sp)
+                                    Text("$durationStr · ${call.route.displayName}", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = Color(0xFF39FF66).copy(alpha = 0.15f),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF39FF66))
+                            ) {
+                                Text(
+                                    text = "P2P DIRECTO",
+                                    color = Color(0xFF39FF66),
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Black,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+
+                        // Remote Video Screen with HUD
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(180.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(
+                                    Brush.verticalGradient(
+                                        listOf(Color(0xFF0A1C30), Color(0xFF040A14))
+                                    )
+                                )
+                                .border(1.dp, Color(0xFF1B3B60), RoundedCornerShape(14.dp))
+                        ) {
+                            // Central Video stream placeholder / cyber reticle
+                            if (call.isVideoActive) {
+                                Column(
+                                    modifier = Modifier.align(Alignment.Center),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(64.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFF00D9FF).copy(alpha = 0.15f))
+                                            .border(1.5.dp, Color(0xFF00D9FF), CircleShape),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("👤", fontSize = 28.sp)
+                                    }
+                                    Text(
+                                        text = partner?.userId ?: "Peer Remoto",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = "Stream H.264 P2P Activo",
+                                        color = Color(0xFF39FF66),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            } else {
+                                Column(
+                                    modifier = Modifier.align(Alignment.Center),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(Icons.Default.VideocamOff, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(36.dp))
+                                    Text("Cámara remota en pausa", color = Color.Gray, fontSize = 11.sp)
+                                }
+                            }
+
+                            // HUD Telemetry Overlay (Top Left)
+                            Surface(
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(8.dp),
+                                color = Color.Black.copy(alpha = 0.65f),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = "${call.resolution} · ${call.bitrateKbps} kbps · ${call.latencyMs}ms",
+                                    color = Color(0xFF00F0FF),
+                                    fontSize = 8.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                )
+                            }
+
+                            // Local Camera Picture-in-Picture (PiP) Window (Bottom End)
+                            Surface(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(8.dp)
+                                    .size(width = 80.dp, height = 100.dp),
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color(0xFF0E1F35),
+                                border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF39FF66))
+                            ) {
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    Column(
+                                        modifier = Modifier.align(Alignment.Center),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        Text("🤳", fontSize = 18.sp)
+                                        Text(
+                                            text = if (call.isFrontCamera) "Frontal" else "Trasera",
+                                            color = Color.White,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Controls Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Mic Mute
+                            IconButton(
+                                onClick = { viewModel.toggleVideoCallMute() },
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(if (call.isMuted) Color(0xFFFF3366) else Color(0xFF142A45))
+                            ) {
+                                Icon(
+                                    imageVector = if (call.isMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                                    contentDescription = "Silenciar audio",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            // Camera Toggle
+                            IconButton(
+                                onClick = { viewModel.toggleVideoCallCamera() },
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(if (!call.isVideoActive) Color(0xFFFF9900) else Color(0xFF142A45))
+                            ) {
+                                Icon(
+                                    imageVector = if (call.isVideoActive) Icons.Default.Videocam else Icons.Default.VideocamOff,
+                                    contentDescription = "Alternar cámara",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            // Flip Camera (Front / Back)
+                            IconButton(
+                                onClick = { viewModel.flipVideoCallCamera() },
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF142A45))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Cameraswitch,
+                                    contentDescription = "Girar cámara",
+                                    tint = Color(0xFF00D9FF),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            // End Call
+                            IconButton(
+                                onClick = { viewModel.endVideoCall() },
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFFF1744))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CallEnd,
+                                    contentDescription = "Finalizar videollamada",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -142,6 +502,8 @@ fun FleetChatDetailScreen(
                         audioProgress = audioProgress,
                         audioPositionText = audioPositionText,
                         onPlayAudio = { viewModel.togglePlayVoice(message) },
+                        onImageClick = { selectedImageForPreview = it },
+                        onCallClick = { viewModel.startVoiceCall() },
                         navController = navController
                     )
                 }
@@ -272,6 +634,9 @@ fun FleetChatDetailScreen(
                                     }
                             ) {
                                 AnimatedNeonIcon(Icons.Default.Mic, contentDescription = "Grabar", tint = MeetColors.electricBlue)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -353,8 +718,40 @@ fun FleetChatDetailScreen(
             containerColor = MeetColors.cardBackground,
         )
     }
-}
-        }
+
+    selectedImageForPreview?.let { path ->
+        AlertDialog(
+            onDismissRequest = { selectedImageForPreview = null },
+            confirmButton = {
+                TextButton(onClick = { selectedImageForPreview = null }) {
+                    Text("Cerrar", color = MeetColors.electricBlue)
+                }
+            },
+            title = { Text("Visualizador de Medios Mesh", color = Color.White) },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(260.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color(0xFF09101E))
+                            .border(1.dp, Color(0xFF00F0FF), RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("🖼️", fontSize = 48.sp)
+                            Spacer(Modifier.height(8.dp))
+                            Text("Fotografía de Diagnóstico / Flota", color = Color.White, fontWeight = FontWeight.Bold)
+                            Text("Ruta: $path", color = MeetColors.textMuted, fontSize = 10.sp, maxLines = 1)
+                            Spacer(Modifier.height(6.dp))
+                            Text("✓ Verificado por Canal Wi-Fi Mesh", color = Color(0xFF39FF66), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                }
+            },
+            containerColor = MeetColors.backgroundDark
+        )
     }
 }
 
@@ -366,18 +763,15 @@ fun MessageBubble(
     audioProgress: Float,
     audioPositionText: String,
     onPlayAudio: () -> Unit,
+    onImageClick: (String) -> Unit = {},
+    onCallClick: () -> Unit = {},
     navController: NavController? = null
 ) {
     val timeFormat = remember { SimpleDateFormat("hh:mm a", Locale.getDefault()) }
     val formattedTime = remember(message.timestamp) { timeFormat.format(Date(message.timestamp)) }
 
     val alignment = if (isOwn) Alignment.End else Alignment.Start
-    val bubbleColor = if (isOwn) MeetColors.electricBlue.copy(alpha = 0.15f) else MeetColors.cardBackground
-    val borderBrush = if (isOwn) {
-        Brush.horizontalGradient(listOf(MeetColors.electricBlue, MeetColors.cyberCyan))
-    } else {
-        Brush.horizontalGradient(listOf(MeetColors.backgroundDark, MeetColors.backgroundDark))
-    }
+    val bubbleColor = if (isOwn) Color(0xFF0F223D) else Color(0xFF0B1424)
 
     Column(
         modifier = Modifier
@@ -386,9 +780,10 @@ fun MessageBubble(
         horizontalAlignment = alignment
     ) {
         EliteCard(
-            modifier = Modifier.widthIn(max = 290.dp),
-            glowColor = if (isOwn) MeetColors.electricBlue.copy(alpha = 0.2f) else Color.Transparent,
+            modifier = Modifier.widthIn(max = 300.dp),
+            glowColor = if (isOwn) Color(0xFF00F0FF).copy(alpha = 0.2f) else Color.Transparent,
             backgroundColor = bubbleColor,
+            borderColor = if (isOwn) Color(0xFF00F0FF).copy(alpha = 0.4f) else Color(0xFF1E3355).copy(alpha = 0.4f),
             shape = RoundedCornerShape(
                 topStart = 16.dp,
                 topEnd = 16.dp,
@@ -398,6 +793,86 @@ fun MessageBubble(
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 when (message.messageType) {
+                    "IMAGE" -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF070E1A))
+                                .clickable { message.fileLocalPath?.let { onImageClick(it) } }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(160.dp)
+                                    .background(
+                                        Brush.verticalGradient(
+                                            listOf(Color(0xFF0A1526), Color(0xFF060B12))
+                                        )
+                                    )
+                                    .border(1.dp, Color(0xFF00F0FF).copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("📷", fontSize = 42.sp)
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = message.messageText ?: "Fotografía de Evidencia",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = "⚡ Canal Wi-Fi Mesh P2P · Toca para abrir",
+                                        color = Color(0xFF00F0FF),
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    "CALL" -> {
+                        val isVideo = message.messageText?.contains("Videollamada") == true
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isVideo) Color(0xFF00D9FF).copy(alpha = 0.2f) else Color(0xFF39FF66).copy(alpha = 0.2f))
+                                        .border(1.dp, if (isVideo) Color(0xFF00D9FF) else Color(0xFF39FF66), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(if (isVideo) "📹" else "📞", fontSize = 16.sp)
+                                }
+                                Column {
+                                    Text(
+                                        text = if (isVideo) "Videollamada Mesh P2P" else "Llamada de voz Mesh",
+                                        color = if (isVideo) Color(0xFF00D9FF) else Color(0xFF39FF66),
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 12.sp
+                                    )
+                                    Text(
+                                        text = message.messageText ?: "Finalizada",
+                                        color = Color.White,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                            IconButton(onClick = onCallClick, modifier = Modifier.size(30.dp)) {
+                                Icon(
+                                    imageVector = if (isVideo) Icons.Default.Videocam else Icons.Default.Phone,
+                                    contentDescription = "Llamar",
+                                    tint = if (isVideo) Color(0xFF00D9FF) else Color(0xFF39FF66),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
                     "AUDIO" -> {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -407,7 +882,7 @@ fun MessageBubble(
                                 AnimatedNeonIcon(
                                     imageVector = if (playingMessageId == message.id) Icons.Default.Pause else Icons.Default.PlayArrow,
                                     contentDescription = "Reproducir nota de voz",
-                                    tint = MeetColors.electricBlue
+                                    tint = Color(0xFF39FF66)
                                 )
                             }
                             Spacer(modifier = Modifier.width(8.dp))
@@ -415,7 +890,7 @@ fun MessageBubble(
                                 if (playingMessageId == message.id) {
                                     LinearProgressIndicator(
                                         progress = { audioProgress },
-                                        color = MeetColors.electricBlue,
+                                        color = Color(0xFF39FF66),
                                         trackColor = MeetColors.backgroundDark,
                                         modifier = Modifier.fillMaxWidth().height(4.dp)
                                     )
@@ -436,13 +911,13 @@ fun MessageBubble(
                                                 modifier = Modifier
                                                     .width(3.dp)
                                                     .height(height.dp)
-                                                    .background(MeetColors.textSecondary, RoundedCornerShape(1.dp))
+                                                    .background(Color(0xFF39FF66).copy(alpha = 0.7f), RoundedCornerShape(1.dp))
                                             )
                                         }
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = "🎙️ Nota de voz (${message.durationSeconds}s)",
+                                        text = "🎙️ Nota de voz (${message.durationSeconds}s) · Wi-Fi Mesh",
                                         color = MeetColors.textSecondary,
                                         fontSize = 10.sp
                                     )
@@ -492,6 +967,37 @@ fun MessageBubble(
                             )
                         }
                     }
+                    "CALL" -> {
+                        val isVideo = message.messageText?.contains("Videollamada") == true
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(32.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isVideo) Color(0xFF00D9FF).copy(alpha = 0.2f) else Color(0xFF39FF66).copy(alpha = 0.2f))
+                                    .border(1.dp, if (isVideo) Color(0xFF00D9FF) else Color(0xFF39FF66), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(if (isVideo) "📹" else "📞", fontSize = 16.sp)
+                            }
+                            Column {
+                                Text(
+                                    text = if (isVideo) "Videollamada Mesh P2P" else "Llamada de voz Mesh",
+                                    color = if (isVideo) Color(0xFF00D9FF) else Color(0xFF39FF66),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                                Text(
+                                    text = message.messageText ?: "Llamada finalizada",
+                                    color = Color.White,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
+                    }
                     else -> {
                         Text(
                             text = message.messageText ?: "",
@@ -514,17 +1020,44 @@ fun MessageBubble(
                     )
                     if (isOwn) {
                         Spacer(modifier = Modifier.width(4.dp))
-                        AnimatedNeonIcon(
-                            imageVector = when (message.status) {
-                                "SENT" -> Icons.Default.Check
-                                "DELIVERED" -> Icons.Default.DoneAll
-                                "READ" -> Icons.Default.DoneAll
-                                else -> Icons.Default.Check
-                            },
-                            contentDescription = null,
-                            tint = if (message.status == "READ" || message.status == "DELIVERED") MeetColors.electricBlue else MeetColors.textSecondary,
-                            modifier = Modifier.size(12.dp)
-                        )
+                        when (message.status) {
+                            "DELIVERED_MESH_WIFI" -> {
+                                Text("⚡ Wi-Fi Mesh", color = Color(0xFF00F0FF), fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.width(2.dp))
+                                AnimatedNeonIcon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = null,
+                                    tint = Color(0xFF00F0FF),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                            "DELIVERED_MESH_BLE" -> {
+                                Text("📡 BLE", color = Color(0xFF9D00FF), fontSize = 8.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.width(2.dp))
+                                AnimatedNeonIcon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = null,
+                                    tint = Color(0xFF9D00FF),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                            "DELIVERED", "READ", "DELIVERED_CLOUD" -> {
+                                AnimatedNeonIcon(
+                                    imageVector = Icons.Default.DoneAll,
+                                    contentDescription = null,
+                                    tint = Color(0xFF39FF66),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                            else -> {
+                                AnimatedNeonIcon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = null,
+                                    tint = MeetColors.textSecondary,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }

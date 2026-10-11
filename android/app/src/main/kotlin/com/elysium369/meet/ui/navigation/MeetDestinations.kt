@@ -71,6 +71,11 @@ object MeetDestinations {
     const val FILE_MANAGER = "elysium_file_manager"
     const val RECORD_SHIELD = "elysium_record_shield"
 
+    // ELYSIUM LINKSPHERE (Universal Social Link Layer)
+    const val LINKSPHERE = "linksphere"
+    const val LINKSPHERE_COMPOSER = "linksphere_composer"
+    const val LINKSPHERE_SETTINGS = "linksphere_settings"
+
     // SUPREME BASS (Neon Integration)
     const val SUPREME_BASS = "supreme_bass"
     const val SUPREME_BASS_BOOST = "supreme_bass_boost"

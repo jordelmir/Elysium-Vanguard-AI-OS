@@ -12,6 +12,9 @@ import com.elysium369.meet.data.local.dao.FleetDao
 import com.elysium369.meet.data.local.dao.VehicleDao
 import com.elysium369.meet.data.local.entities.*
 import com.elysium369.meet.data.supabase.SupabaseManager
+import com.elysium369.meet.core.mesh.ElysiumMeshGovernance
+import com.elysium369.meet.core.mesh.MeshPayloadType
+import com.elysium369.meet.core.mesh.MeshTransportLevel
 import com.elysium369.meet.ride.data.remote.PlatformTrustCenterGateway
 import com.elysium369.meet.ride.data.remote.ServiceVerificationSubmission
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -103,6 +106,38 @@ class FleetChatViewModel @Inject constructor(
     // Block status
     private val _isPartnerBlocked = MutableStateFlow(false)
     val isPartnerBlocked = _isPartnerBlocked.asStateFlow()
+
+    // ── Voice Call Session State (Mesh VoIP / PTT) ──
+    data class VoiceCallSession(
+        val isActive: Boolean = false,
+        val partnerId: String = "",
+        val durationSeconds: Int = 0,
+        val route: MeshTransportLevel = MeshTransportLevel.WIFI_DIRECT_MESH,
+        val isMuted: Boolean = false,
+        val isSpeakerOn: Boolean = true
+    )
+
+    private val _activeVoiceCall = MutableStateFlow<VoiceCallSession?>(null)
+    val activeVoiceCall: StateFlow<VoiceCallSession?> = _activeVoiceCall.asStateFlow()
+    private var callTimerJob: kotlinx.coroutines.Job? = null
+
+    // ── Video Call Session State (Mesh Video P2P en Vivo) ──
+    data class VideoCallSession(
+        val isActive: Boolean = false,
+        val partnerId: String = "",
+        val durationSeconds: Int = 0,
+        val route: MeshTransportLevel = MeshTransportLevel.WIFI_DIRECT_MESH,
+        val isMuted: Boolean = false,
+        val isVideoActive: Boolean = true,
+        val isFrontCamera: Boolean = true,
+        val resolution: String = "720p · 30 FPS",
+        val bitrateKbps: Int = 1850,
+        val latencyMs: Int = 18
+    )
+
+    private val _activeVideoCall = MutableStateFlow<VideoCallSession?>(null)
+    val activeVideoCall: StateFlow<VideoCallSession?> = _activeVideoCall.asStateFlow()
+    private var videoCallTimerJob: kotlinx.coroutines.Job? = null
 
     /**
      * Set active business ID
@@ -233,7 +268,7 @@ class FleetChatViewModel @Inject constructor(
                 status = "PENDING"
             )
             chatDao.insertMessage(msg)
-            simulateMessageDelivery(msg.id)
+            simulateMessageDelivery(msg.id, MeshPayloadType.TEXT)
         }
     }
 
@@ -283,7 +318,7 @@ class FleetChatViewModel @Inject constructor(
                     status = "PENDING"
                 )
                 chatDao.insertMessage(msg)
-                simulateMessageDelivery(msg.id)
+                simulateMessageDelivery(msg.id, MeshPayloadType.AUDIO_NOTE)
             }
         }
         activeRecordFile = null
@@ -366,7 +401,7 @@ class FleetChatViewModel @Inject constructor(
                 status = "PENDING"
             )
             chatDao.insertMessage(msg)
-            simulateMessageDelivery(msg.id)
+            simulateMessageDelivery(msg.id, MeshPayloadType.DTC_ALERT)
         }
     }
 
@@ -377,6 +412,10 @@ class FleetChatViewModel @Inject constructor(
         val businessId = _selectedBusinessId.value ?: return
         val partner = _selectedPartner.value ?: return
 
+        val isImg = type.contains("IMAGE", ignoreCase = true) || file.extension.lowercase() in listOf("jpg", "jpeg", "png", "webp")
+        val effectiveType = if (isImg) "IMAGE" else "FILE"
+        val payloadType = if (isImg) MeshPayloadType.IMAGE else MeshPayloadType.TEXT
+
         viewModelScope.launch(Dispatchers.IO) {
             val msg = ChatMessageEntity(
                 id = UUID.randomUUID().toString(),
@@ -384,7 +423,7 @@ class FleetChatViewModel @Inject constructor(
                 senderId = currentUserId,
                 receiverId = partner.userId,
                 messageText = file.name,
-                messageType = "FILE",
+                messageType = effectiveType,
                 fileLocalPath = file.absolutePath,
                 fileRemoteUrl = null,
                 durationSeconds = 0,
@@ -392,7 +431,7 @@ class FleetChatViewModel @Inject constructor(
                 status = "PENDING"
             )
             chatDao.insertMessage(msg)
-            simulateMessageDelivery(msg.id)
+            simulateMessageDelivery(msg.id, payloadType)
         }
     }
 
@@ -598,16 +637,174 @@ class FleetChatViewModel @Inject constructor(
         }
     }
 
-    private suspend fun simulateMessageDelivery(msgId: String) {
-        // Simulates delivery state updates for the user experience
-        kotlinx.coroutines.delay(1000)
+    // ── Voice Call Controls (Mesh VoIP / Walkie-Talkie) ──
+    fun startVoiceCall() {
+        val businessId = _selectedBusinessId.value ?: return
+        val partner = _selectedPartner.value ?: return
+        val resolution = ElysiumMeshGovernance.resolveRouteForPayload(MeshPayloadType.VOICE_CALL_STREAM)
+
+        _activeVoiceCall.value = VoiceCallSession(
+            isActive = true,
+            partnerId = partner.userId,
+            durationSeconds = 0,
+            route = resolution.level
+        )
+        callTimerJob?.cancel()
+        callTimerJob = viewModelScope.launch(Dispatchers.Default) {
+            while (coroutineContext[kotlinx.coroutines.Job]?.isActive == true && _activeVoiceCall.value?.isActive == true) {
+                kotlinx.coroutines.delay(1000)
+                _activeVoiceCall.update { current ->
+                    current?.copy(durationSeconds = current.durationSeconds + 1)
+                }
+            }
+        }
+    }
+
+    fun toggleCallMute() {
+        _activeVoiceCall.update { current ->
+            current?.copy(isMuted = !current.isMuted)
+        }
+    }
+
+    fun toggleCallSpeaker() {
+        _activeVoiceCall.update { current ->
+            current?.copy(isSpeakerOn = !current.isSpeakerOn)
+        }
+    }
+
+    fun endVoiceCall() {
+        val call = _activeVoiceCall.value ?: return
+        val businessId = _selectedBusinessId.value ?: return
+        val partner = _selectedPartner.value ?: return
+        callTimerJob?.cancel()
+        callTimerJob = null
+        val duration = call.durationSeconds
+        _activeVoiceCall.value = null
+
+        val min = duration / 60
+        val sec = duration % 60
+        val durationText = String.format("%d:%02d", min, sec)
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val routeDesc = when (call.route) {
+                MeshTransportLevel.WIFI_DIRECT_MESH -> "Wi-Fi Mesh P2P"
+                MeshTransportLevel.BLUETOOTH_BLE_MESH -> "BLE Mesh (PTT)"
+                MeshTransportLevel.INTERNET -> "Internet Nube"
+                else -> "Mesh"
+            }
+            val callMsg = ChatMessageEntity(
+                id = UUID.randomUUID().toString(),
+                businessId = businessId,
+                senderId = currentUserId,
+                receiverId = partner.userId,
+                messageText = "📞 Llamada de voz finalizada · $durationText ($routeDesc)",
+                messageType = "CALL",
+                fileLocalPath = null,
+                fileRemoteUrl = null,
+                durationSeconds = duration,
+                timestamp = System.currentTimeMillis(),
+                status = "DELIVERED"
+            )
+            chatDao.insertMessage(callMsg)
+        }
+    }
+
+    // ── Video Call Controls (Mesh Video P2P en Vivo) ──
+    fun startVideoCall() {
+        val businessId = _selectedBusinessId.value ?: return
+        val partner = _selectedPartner.value ?: return
+        val resolution = ElysiumMeshGovernance.resolveRouteForPayload(MeshPayloadType.VIDEO_CALL_STREAM)
+
+        _activeVideoCall.value = VideoCallSession(
+            isActive = true,
+            partnerId = partner.userId,
+            durationSeconds = 0,
+            route = resolution.level
+        )
+        videoCallTimerJob?.cancel()
+        videoCallTimerJob = viewModelScope.launch(Dispatchers.Default) {
+            while (coroutineContext[kotlinx.coroutines.Job]?.isActive == true && _activeVideoCall.value?.isActive == true) {
+                kotlinx.coroutines.delay(1000)
+                _activeVideoCall.update { current ->
+                    current?.copy(durationSeconds = current.durationSeconds + 1)
+                }
+            }
+        }
+    }
+
+    fun toggleVideoCallMute() {
+        _activeVideoCall.update { current ->
+            current?.copy(isMuted = !current.isMuted)
+        }
+    }
+
+    fun toggleVideoCallCamera() {
+        _activeVideoCall.update { current ->
+            current?.copy(isVideoActive = !current.isVideoActive)
+        }
+    }
+
+    fun flipVideoCallCamera() {
+        _activeVideoCall.update { current ->
+            current?.copy(isFrontCamera = !current.isFrontCamera)
+        }
+    }
+
+    fun endVideoCall() {
+        val call = _activeVideoCall.value ?: return
+        val businessId = _selectedBusinessId.value ?: return
+        val partner = _selectedPartner.value ?: return
+        videoCallTimerJob?.cancel()
+        videoCallTimerJob = null
+        val duration = call.durationSeconds
+        _activeVideoCall.value = null
+
+        val min = duration / 60
+        val sec = duration % 60
+        val durationText = String.format("%d:%02d", min, sec)
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val routeDesc = when (call.route) {
+                MeshTransportLevel.WIFI_DIRECT_MESH -> "Wi-Fi Mesh P2P Directo"
+                MeshTransportLevel.INTERNET -> "Internet Nube"
+                else -> "Mesh Local"
+            }
+            val callMsg = ChatMessageEntity(
+                id = UUID.randomUUID().toString(),
+                businessId = businessId,
+                senderId = currentUserId,
+                receiverId = partner.userId,
+                messageText = "📹 Videollamada finalizada · $durationText ($routeDesc)",
+                messageType = "CALL",
+                fileLocalPath = null,
+                fileRemoteUrl = null,
+                durationSeconds = duration,
+                timestamp = System.currentTimeMillis(),
+                status = "DELIVERED"
+            )
+            chatDao.insertMessage(callMsg)
+        }
+    }
+
+    private suspend fun simulateMessageDelivery(msgId: String, payloadType: MeshPayloadType = MeshPayloadType.TEXT) {
+        val resolution = ElysiumMeshGovernance.resolveRouteForPayload(payloadType)
+        ElysiumMeshGovernance.recordPayloadSent(payloadType)
+        kotlinx.coroutines.delay(400)
         chatDao.updateMessageStatus(msgId, "SENT")
-        kotlinx.coroutines.delay(800)
-        chatDao.updateMessageStatus(msgId, "DELIVERED")
+        kotlinx.coroutines.delay(400)
+        val finalStatus = when (resolution.level) {
+            MeshTransportLevel.INTERNET -> "DELIVERED"
+            MeshTransportLevel.WIFI_DIRECT_MESH -> "DELIVERED_MESH_WIFI"
+            MeshTransportLevel.BLUETOOTH_BLE_MESH -> "DELIVERED_MESH_BLE"
+            MeshTransportLevel.OFFLINE_STORED -> "PENDING_MESH_OUTBOX"
+        }
+        chatDao.updateMessageStatus(msgId, finalStatus)
     }
 
     override fun onCleared() {
         super.onCleared()
+        callTimerJob?.cancel()
+        videoCallTimerJob?.cancel()
         voicePlayer.stop()
         voiceRecorder.cancelRecording()
     }

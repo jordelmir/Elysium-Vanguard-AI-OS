@@ -59,6 +59,7 @@ fun UniversalServicesScreen(
     onNavigateToProviderConfig: () -> Unit = {},
     onOpenAdvancedMarketplace: () -> Unit = {},
     onPrepareRequest: ((com.elysium369.meet.ui.screens.services.ServicesRequestDraft) -> Unit)? = null,
+    showTopBar: Boolean = true,
 ) {
     val context = LocalContext.current
     val openAuthoritativeServices = com.elysium369.meet.ui.screens.services.LocalServiceOnlineAction.current
@@ -106,35 +107,37 @@ fun UniversalServicesScreen(
     Scaffold(
         containerColor = MeetColors.backgroundDark,
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text("SERVICIOS ELYSIUM", color = Color.White, fontWeight = FontWeight.Black)
-                        Text("Servicios y oficios · Materiales · Profesionales", color = MeetColors.cyberCyan, fontSize = 10.sp)
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, "Volver", tint = MeetColors.cyberCyan)
-                    }
-                },
-                actions = {
-                    IconButton(onClick = onOpenMessages) {
-                        Icon(Icons.Default.Chat, "Mensajes del servicio", tint = MeetColors.cyberCyan)
-                    }
-                    IconButton(onClick = { viewModel.voiceFeedbackManager.guideHardwareAndTradesStatus("WELCOME") }) {
-                        Icon(Icons.Default.VolumeUp, "Voz Asistente", tint = MeetColors.neonGreen)
-                    }
-                    Text(if (providerMode) "PROVEEDOR" else "CLIENTE", color = MeetColors.neonGreen, fontSize = 10.sp)
-                    Switch(
-                        checked = providerMode,
-                        onCheckedChange = {
-                            if (it && myProfile == null) showProviderRegistration = true else providerMode = it
-                        },
-                    )
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MeetColors.backgroundDeep),
-            )
+            if (showTopBar) {
+                TopAppBar(
+                    title = {
+                        Column {
+                            Text("SERVICIOS ELYSIUM", color = Color.White, fontWeight = FontWeight.Black)
+                            Text("Servicios y oficios · Materiales · Profesionales", color = MeetColors.cyberCyan, fontSize = 10.sp)
+                        }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.Default.ArrowBack, "Volver", tint = MeetColors.cyberCyan)
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = onOpenMessages) {
+                            Icon(Icons.Default.Chat, "Mensajes del servicio", tint = MeetColors.cyberCyan)
+                        }
+                        IconButton(onClick = { viewModel.voiceFeedbackManager.guideHardwareAndTradesStatus("WELCOME") }) {
+                            Icon(Icons.Default.VolumeUp, "Voz Asistente", tint = MeetColors.neonGreen)
+                        }
+                        Text(if (providerMode) "PROVEEDOR" else "CLIENTE", color = MeetColors.neonGreen, fontSize = 10.sp)
+                        Switch(
+                            checked = providerMode,
+                            onCheckedChange = {
+                                if (it && myProfile == null) showProviderRegistration = true else providerMode = it
+                            },
+                        )
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MeetColors.backgroundDeep),
+                )
+            }
         },
     ) { padding ->
         Column(
@@ -323,10 +326,16 @@ fun UniversalServicesScreen(
                             destination = dest,
                         )
                     }
+                    val screenWidthDp = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp
+                    val mapHeight = when {
+                        screenWidthDp < 380 -> 160.dp
+                        screenWidthDp >= 600 -> 240.dp
+                        else -> 200.dp
+                    }
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(210.dp)
+                            .height(mapHeight)
                             .graphicsLayer {
                                 shadowElevation = 16.dp.toPx()
                                 cameraDistance = 16f * density

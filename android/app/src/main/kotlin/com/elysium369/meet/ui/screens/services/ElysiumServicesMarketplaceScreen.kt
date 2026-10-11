@@ -88,6 +88,7 @@ fun ElysiumServicesMarketplaceScreen(
     navController: NavController,
     viewModel: ObdViewModel,
     onPrepareRequest: ((ServicesRequestDraft) -> Unit)? = null,
+    showTopBar: Boolean = true,
 ) {
     val context = LocalContext.current
     val openAuthoritativeServices = LocalServiceOnlineAction.current
@@ -254,65 +255,67 @@ fun ElysiumServicesMarketplaceScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = "ELYSIUM SERVICIOS & SUBASTA",
-                            fontWeight = FontWeight.Black,
-                            fontSize = 17.sp,
-                            color = Color.White,
-                            letterSpacing = 0.5.sp,
-                        )
-                        Text(
-                            text = if (isSpecialistMode) "Modo Especialista (Tomar / Contraofertar)" else "Modo Cliente (Preparar solicitud)",
-                            fontSize = 11.sp,
-                            color = if (isSpecialistMode) MeetColors.neonGreen else MeetColors.cyberCyan,
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Regresar", tint = Color.White)
-                    }
-                },
-                actions = {
-                    // Acceso directo a Servicios Activos / Finalizados
-                    IconButton(onClick = { navController.safeNavigate(MeetDestinations.SERVICES_ACTIVE) }) {
-                        Icon(Icons.Default.ReceiptLong, contentDescription = "Mis Servicios", tint = MeetColors.neonGreen)
-                    }
-
-                    // Mode Switcher Chip
-                    Surface(
-                        modifier = Modifier
-                            .padding(end = 12.dp)
-                            .clickable { isSpecialistMode = !isSpecialistMode },
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (isSpecialistMode) MeetColors.neonGreen.copy(alpha = 0.2f) else MeetColors.cyberCyan.copy(alpha = 0.2f),
-                        border = BorderStroke(1.dp, if (isSpecialistMode) MeetColors.neonGreen else MeetColors.cyberCyan)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = if (isSpecialistMode) Icons.Default.Engineering else Icons.Default.Person,
-                                contentDescription = null,
-                                tint = if (isSpecialistMode) MeetColors.neonGreen else MeetColors.cyberCyan,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(Modifier.width(6.dp))
+            if (showTopBar) {
+                TopAppBar(
+                    title = {
+                        Column {
                             Text(
-                                text = if (isSpecialistMode) "ESPECIALISTA" else "CLIENTE",
-                                color = if (isSpecialistMode) MeetColors.neonGreen else MeetColors.cyberCyan,
+                                text = "ELYSIUM SERVICIOS & SUBASTA",
+                                fontWeight = FontWeight.Black,
+                                fontSize = 17.sp,
+                                color = Color.White,
+                                letterSpacing = 0.5.sp,
+                            )
+                            Text(
+                                text = if (isSpecialistMode) "Modo Especialista (Tomar / Contraofertar)" else "Modo Cliente (Preparar solicitud)",
                                 fontSize = 11.sp,
-                                fontWeight = FontWeight.Black
+                                color = if (isSpecialistMode) MeetColors.neonGreen else MeetColors.cyberCyan,
                             )
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = MeetColors.backgroundDeep)
-            )
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { navController.popBackStack() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Regresar", tint = Color.White)
+                        }
+                    },
+                    actions = {
+                        // Acceso directo a Servicios Activos / Finalizados
+                        IconButton(onClick = { navController.safeNavigate(MeetDestinations.SERVICES_ACTIVE) }) {
+                            Icon(Icons.Default.ReceiptLong, contentDescription = "Mis Servicios", tint = MeetColors.neonGreen)
+                        }
+
+                        // Mode Switcher Chip
+                        Surface(
+                            modifier = Modifier
+                                .padding(end = 12.dp)
+                                .clickable { isSpecialistMode = !isSpecialistMode },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isSpecialistMode) MeetColors.neonGreen.copy(alpha = 0.2f) else MeetColors.cyberCyan.copy(alpha = 0.2f),
+                            border = BorderStroke(1.dp, if (isSpecialistMode) MeetColors.neonGreen else MeetColors.cyberCyan)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = if (isSpecialistMode) Icons.Default.Engineering else Icons.Default.Person,
+                                    contentDescription = null,
+                                    tint = if (isSpecialistMode) MeetColors.neonGreen else MeetColors.cyberCyan,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = if (isSpecialistMode) "ESPECIALISTA" else "CLIENTE",
+                                    color = if (isSpecialistMode) MeetColors.neonGreen else MeetColors.cyberCyan,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black
+                                )
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MeetColors.backgroundDeep)
+                )
+            }
         },
         containerColor = MeetColors.backgroundDeep
     ) { padding ->
@@ -3311,31 +3314,60 @@ private fun SinpeTopUpDialog(
 
                 Spacer(Modifier.height(14.dp))
 
-                // Instrucciones SINPE Móvil
+                // Fondo de Respaldo Transitorio & Préstamo Operativo
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFF0A1828), RoundedCornerShape(8.dp))
-                        .border(1.dp, Color(0xFF1B354D), RoundedCornerShape(8.dp))
-                        .padding(10.dp)
+                        .background(Color(0xFF0A1828), RoundedCornerShape(10.dp))
+                        .border(1.dp, Color(0xFF1B354D), RoundedCornerShape(10.dp))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        "📱 Paga vía SINPE Móvil al número:",
+                        "🏢 Elysium Network Corporation — Fideicomiso Operativo",
                         color = Color.White,
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        "8888-6338 (8888-MEET)",
-                        color = MeetColors.neonGreen,
-                        fontSize = 15.sp,
                         fontWeight = FontWeight.Black
                     )
                     Text(
-                        "A nombre de: MEET Especialistas S.A.",
-                        color = Color.LightGray,
-                        fontSize = 10.sp
+                        "🛡️ Fondo de Respaldo Transitorio: Puedes pedir prestado en tramos de ₡3,000 CRC cada vez que tu saldo sea de ₡400 CRC o menor. La deuda se va sumando (puede acumular millones). Al activarse la Cuenta Bancaria Empresarial Oficial de Elysium, deberás liquidar lo adeudado para continuar trabajando o la cuenta entrará en pausa operativa.",
+                        color = MeetColors.textSecondary,
+                        fontSize = 9.sp,
+                        lineHeight = 11.5.sp
                     )
+
+                    if (currentBalanceCrc <= 400L) {
+                        Button(
+                            onClick = {
+                                onConfirmTopUp(3000L, "PRESTAMO-3000-INMEDIATO")
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = MeetColors.neonGreen),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                "⚡ PEDIR PRESTADO (+₡3,000 CRC) · SALDO ≤ ₡400",
+                                color = Color.Black,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp
+                            )
+                        }
+                    } else {
+                        Surface(
+                            color = Color(0xFF0C1F33),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, MeetColors.cyberCyan.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "ℹ️ Saldo actual: ₡${"%,d".format(currentBalanceCrc)} CRC (> ₡400). Préstamo disponible cuando el saldo sea ≤ ₡400 CRC.",
+                                color = MeetColors.cyberCyan,
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(6.dp)
+                            )
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(12.dp))

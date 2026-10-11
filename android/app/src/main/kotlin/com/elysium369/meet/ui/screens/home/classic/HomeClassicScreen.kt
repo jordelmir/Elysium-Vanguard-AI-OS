@@ -6,6 +6,7 @@ import com.elysium369.meet.core.agent.ui.agentAction
 import com.elysium369.meet.core.agent.ui.AgentUiControlId
 import android.content.Context
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -29,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.unit.dp
@@ -523,8 +525,76 @@ fun HomeClassicScreen(
                 com.elysium369.meet.ui.components.VehicleIdentificationCard(viewModel = viewModel)
             }
 
+            // ── Elysium Mesh Master Dock (Governs Wi-Fi, Bluetooth & Dual Sync) ──
+            AnimatedEntrance(5) {
+                com.elysium369.meet.ui.components.ElysiumMeshMasterDock(
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+            }
+
             // ── Quick Actions Grid ──
             PhantomSectionHeader("Acciones Rápidas")
+
+            // ── Elysium LinkSphere Social Hero ──
+            AnimatedEntrance(5) {
+                EliteCard(
+                    glowColor = MeetColors.neonGreen,
+                    borderColor = MeetColors.cyberCyan.copy(alpha = 0.5f),
+                    backgroundColor = Color(0xFF071424),
+                    shape = RoundedCornerShape(16.dp),
+                    onClick = { navController.navigate(MeetDestinations.LINKSPHERE) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                            .fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(1f),
+                        ) {
+                            Text("🪐", fontSize = 28.sp)
+                            Column {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "ELYSIUM LINKSPHERE",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 13.sp,
+                                        letterSpacing = 0.6.sp
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Surface(
+                                        color = MeetColors.neonGreen.copy(alpha = 0.2f),
+                                        shape = RoundedCornerShape(4.dp),
+                                        border = BorderStroke(1.dp, MeetColors.neonGreen)
+                                    ) {
+                                        Text(
+                                            "SOCIAL",
+                                            color = MeetColors.neonGreen,
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Black,
+                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                                Text(
+                                    "Red social universal de enlaces: YouTube, TikTok, Spotify, X...",
+                                    color = MeetColors.cyberCyan,
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                        Text("→", color = MeetColors.neonGreen, fontSize = 20.sp, fontWeight = FontWeight.Black)
+                    }
+                }
+            }
 
             // ── Featured Education Quick Action Hero ──
             AnimatedEntrance(5) {

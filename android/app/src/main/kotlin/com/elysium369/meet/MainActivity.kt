@@ -1301,6 +1301,38 @@ fun MeetApp(
             composable("passenger_activity") {
                 com.elysium369.meet.fulfillment.ui.UnifiedActivityScreen(onBack = { navController.backOrHome() })
             }
+            composable(com.elysium369.meet.ui.navigation.MeetDestinations.LINKSPHERE) {
+                val ctx = LocalContext.current
+                val linkViewModel = remember {
+                    com.elysium369.meet.linksphere.ui.LinkSphereViewModel(ctx.applicationContext as android.app.Application)
+                }
+                com.elysium369.meet.linksphere.ui.LinkSphereFeedScreen(
+                    viewModel = linkViewModel,
+                    onNavigateBack = { navController.backOrHome() },
+                    onNavigateToComposer = { navController.navigate(com.elysium369.meet.ui.navigation.MeetDestinations.LINKSPHERE_COMPOSER) },
+                    onNavigateToSettings = { navController.navigate(com.elysium369.meet.ui.navigation.MeetDestinations.LINKSPHERE_SETTINGS) },
+                )
+            }
+            composable(com.elysium369.meet.ui.navigation.MeetDestinations.LINKSPHERE_COMPOSER) {
+                val ctx = LocalContext.current
+                val linkViewModel = remember {
+                    com.elysium369.meet.linksphere.ui.LinkSphereViewModel(ctx.applicationContext as android.app.Application)
+                }
+                com.elysium369.meet.linksphere.ui.LinkSphereComposerScreen(
+                    viewModel = linkViewModel,
+                    onNavigateBack = { navController.backOrHome() },
+                )
+            }
+            composable(com.elysium369.meet.ui.navigation.MeetDestinations.LINKSPHERE_SETTINGS) {
+                val ctx = LocalContext.current
+                val linkViewModel = remember {
+                    com.elysium369.meet.linksphere.ui.LinkSphereViewModel(ctx.applicationContext as android.app.Application)
+                }
+                com.elysium369.meet.linksphere.ui.LinkSphereSettingsScreen(
+                    viewModel = linkViewModel,
+                    onNavigateBack = { navController.backOrHome() },
+                )
+            }
             composable("mechanic_business") {
                 com.elysium369.meet.ui.screens.intelligence.MechanicBusinessScreen(
                     mechanicId = obdViewModel.currentUserId ?: "demo-mechanic",

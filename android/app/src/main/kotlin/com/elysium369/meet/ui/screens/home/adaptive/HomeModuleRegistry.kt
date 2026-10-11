@@ -42,6 +42,7 @@ object HomeModuleRegistry {
         // ── SERVICES & ASSISTANCE ──
         map[HomeSectionCategory.SERVICES]?.addAll(
             listOf(
+                HomeModuleItem("linksphere", "Elysium LinkSphere", "Red social universal de enlaces (YouTube, TikTok, Spotify, X...)", MeetDestinations.LINKSPHERE, HomeSectionCategory.SERVICES, "linksphere", isHighlight = true, badgeText = "SOCIAL"),
                 HomeModuleItem("learning", "Elysium Educación OS", "Educación global, OCDE PISA Nivel 6, oficios y simulaciones", MeetDestinations.ELYSIUM_LEARNING_OS, HomeSectionCategory.SERVICES, "learning_hub", isHighlight = true, badgeText = "PISA 6"),
                 HomeModuleItem("messages", "Mensajes", "Chats y llamadas privadas Elysium", MeetDestinations.MESSAGES, HomeSectionCategory.SERVICES, "messages", isHighlight = true),
                 HomeModuleItem("mechanic", "Servicios Mecánicos", "Red de talleres y cotizaciones", MeetDestinations.MECHANIC_SERVICES, HomeSectionCategory.SERVICES, "mechanic_services", isHighlight = true),

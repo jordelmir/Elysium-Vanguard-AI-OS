@@ -22,6 +22,9 @@ import com.elysium369.meet.data.remote.SupabaseModule
 import com.elysium369.meet.data.supabase.SupabaseManager
 import com.elysium369.meet.identity.PrincipalProvisioningStore
 import com.elysium369.meet.ui.ObdViewModel
+import com.elysium369.meet.core.wallet.SpecialistWalletStore
+import com.elysium369.meet.ui.components.SpecialistSinpeTopupDialog
+import com.elysium369.meet.ui.components.SpecialistWalletCard
 import com.elysium369.meet.ui.theme.MeetColors
 import io.github.jan.supabase.gotrue.auth
 import io.github.jan.supabase.postgrest.postgrest
@@ -102,6 +105,7 @@ fun UnifiedServicesScreen(
     onOfferDraftConsumed: () -> Unit = {},
     initialHistory: Boolean = false,
     onNavigateToAuth: () -> Unit = {},
+    showTopBar: Boolean = true,
 ) {
     val context = LocalContext.current
     val principal by viewModel.activePrincipal.collectAsState()
@@ -135,6 +139,14 @@ fun UnifiedServicesScreen(
     val effectiveOwner = resolveEffectiveUserId()
     val currentUserEmail = client.auth.currentUserOrNull()?.email
         ?: SupabaseManager.client.auth.currentUserOrNull()?.email
+
+    val walletState by SpecialistWalletStore.getWalletFlow(context, effectiveOwner ?: "GUEST", "SERVICES").collectAsState()
+    LaunchedEffect(effectiveOwner) {
+        if (effectiveOwner != null) {
+            SpecialistWalletStore.syncWithTrustCenter(context, effectiveOwner, "SERVICES")
+        }
+    }
+    var showWalletTopupDialog by remember { mutableStateOf(false) }
 
     var providerMode by remember(effectiveOwner) { mutableStateOf(false) }
     var pages by remember(effectiveOwner) { mutableStateOf(1) }
@@ -396,11 +408,13 @@ fun UnifiedServicesScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("Servicios Elysium") },
-                navigationIcon = { TextButton(onClick = onBack) { Text("Volver") } },
-                actions = { TextButton(onClick = onOpenMessages) { Text("Mensajes") } }
-            )
+            if (showTopBar) {
+                TopAppBar(
+                    title = { Text("Servicios Elysium") },
+                    navigationIcon = { TextButton(onClick = onBack) { Text("Volver") } },
+                    actions = { TextButton(onClick = onOpenMessages) { Text("Mensajes") } }
+                )
+            }
         }
     ) { padding ->
         LazyColumn(
@@ -503,12 +517,16 @@ fun UnifiedServicesScreen(
                 }
 
                 if (providerMode) {
+                    SpecialistWalletCard(
+                        walletState = walletState,
+                        roleTitle = "MULTISERVICIOS Y OFICIOS",
+                        accentColor = MeetColors.neonGreen,
+                        onRechargeClick = { showWalletTopupDialog = true },
+                        modifier = Modifier.padding(vertical = 4.dp),
+                    )
                     Text(if (summary.eligible) "Proveedor verificado" else "Registra y verifica tu perfil para ofrecer servicios.")
                     Text("${summary.completed} trabajos completados · ${summary.reviews} calificaciones")
                     Text(summary.rating?.let { "Calificación: %.1f / 5".format(it) } ?: "Aún sin calificaciones")
-                    Text(summary.balance?.let { "Saldo: ₡$it CRC" } ?: "Saldo aún no habilitado")
-                    Text("Tu cuenta de comisiones es compartida por todos los servicios. Recarga mediante SINPE y espera la validación del comprobante.")
-                    Text("Comisión constitucional: 5% del precio acordado: se reserva al aceptar y se cobra una vez al completar el servicio.")
                     OutlinedButton(onClick = onProviderConfig) { Text("Mi perfil y configuración") }
                 } else {
                     Text("Compara propuestas. El proveedor confirma el trabajo y el pago recibido; tú confirmas después el cierre.")
@@ -864,6 +882,15 @@ fun UnifiedServicesScreen(
                     Text("Enviar propuesta")
                 }
             }
+        )
+    }
+
+    if (showWalletTopupDialog) {
+        SpecialistSinpeTopupDialog(
+            serviceTitle = "Servicios y Oficios Elysium",
+            specialistId = effectiveOwner ?: "GUEST",
+            serviceVertical = "SERVICES",
+            onDismiss = { showWalletTopupDialog = false },
         )
     }
 }

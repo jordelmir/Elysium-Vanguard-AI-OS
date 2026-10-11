@@ -61,7 +61,23 @@ data class SpecialistWalletState(
     val totalCommissionsPaidCrc: Long = 0,
     val completedJobsCount: Int = 0,
     val topups: List<SpecialistTopup> = emptyList(),
-)
+    val accumulatedAdvanceDebtCrc: Long = 0L,
+    val creditLimitCrc: Long = 1_000_000_000L,
+    val isOperativeLockedDueToDebt: Boolean = false,
+    val isEnterpriseSettlementMandatory: Boolean = false,
+) {
+    val availableCreditCrc: Long
+        get() = (creditLimitCrc - accumulatedAdvanceDebtCrc).coerceAtLeast(0L)
+
+    val canRequestAdvance: Boolean
+        get() = balanceCrc <= SpecialistWalletStore.MIN_OPERATIVE_BALANCE_THRESHOLD_CRC && !isOperativeSuspended
+
+    val isDebtLimitReached: Boolean
+        get() = accumulatedAdvanceDebtCrc >= creditLimitCrc
+
+    val isOperativeSuspended: Boolean
+        get() = isEnterpriseSettlementMandatory && accumulatedAdvanceDebtCrc > 0L && balanceCrc <= SpecialistWalletStore.MIN_OPERATIVE_BALANCE_THRESHOLD_CRC
+}
 
 data class JobCommissionSplit(
     val grossCrc: Long,
@@ -74,9 +90,18 @@ data class JobCommissionSplit(
 }
 
 object SpecialistWalletStore {
-    const val SINPE_PHONE = "63194029"
-    const val SINPE_RECIPIENT_NAME = "Jorge David Del Valle Miranda"
-    const val SINPE_EMAIL = "jordelmir@gmail.com"
+    // Constantes Institucionales de Respaldo Operativo y Préstamo Transitorio
+    const val MIN_OPERATIVE_BALANCE_THRESHOLD_CRC = 400L // Umbral de saldo: sólo pide si tiene ₡400 o menos
+    const val ADVANCE_TRANCHE_AMOUNT_CRC = 3000L // Tranche exacto de préstamo: de 3,000 en 3,000 CRC
+    const val MAX_OPERATIVE_CREDIT_CEILING_CRC = 1_000_000_000L // La deuda puede alcanzar millones sin bloqueo previo
+    const val DEFAULT_ADVANCE_STEP_CRC = 3000L // Monto de préstamo estándar: ₡3,000 CRC
+    const val ENTERPRISE_ENTITY_NAME = "Elysium Network Corporation — Fideicomiso Operativo Transitorio"
+    const val ENTERPRISE_STATUS_NOTICE = "Línea de Préstamo Operativo (Liquidación diferida a la habilitación de la Cuenta Empresarial Oficial)"
+
+    // Compatibilidad institucional (datos personales eliminados formalmente)
+    const val SINPE_PHONE = "FIDEICOMISO-ELYSIUM"
+    const val SINPE_RECIPIENT_NAME = "Elysium Corporate Trust"
+    const val SINPE_EMAIL = "trust@elysium.network"
 
     private fun ownerNamespace(): String = SupabaseModule.client.auth.currentUserOrNull()?.id ?: "GUEST"
 
@@ -227,6 +252,63 @@ object SpecialistWalletStore {
                 return confirmed
             }
         }
+        return topup
+    }
+
+    /**
+     * Solicitar Préstamo Operativo Inmediato (Fondo de Respaldo Transitorio).
+     * Reglas Constitucionales de Operación:
+     * 1. Solo disponible cuando el saldo operativo sea de ₡400 CRC o menor.
+     * 2. Cada solicitud es por un monto fijo de ₡3,000 CRC (de 3,000 en 3,000 CRC).
+     * 3. La deuda se va sumando y registrando continuamente (puede acumular millones).
+     * 4. Al vincularse la Cuenta Bancaria Empresarial Oficial, todo monto adeudado
+     *    deberá ser liquidado para continuar operando, o la cuenta entrará en suspensión.
+     */
+    suspend fun requestOperativeAdvance(
+        context: Context,
+        specialistId: String,
+        serviceVertical: String,
+        amountCrc: Long = ADVANCE_TRANCHE_AMOUNT_CRC,
+    ): SpecialistTopup {
+        val owner = ownerNamespace()
+        check(owner != "GUEST") { "AUTH_REQUIRED" }
+
+        val current = getWalletFlow(context, specialistId, serviceVertical).value
+        check(current.balanceCrc <= MIN_OPERATIVE_BALANCE_THRESHOLD_CRC) {
+            "BALANCE_ABOVE_THRESHOLD: Solo puedes pedir prestado cuando tu saldo sea de ₡400 CRC o menos (Saldo actual: ₡${current.balanceCrc} CRC)."
+        }
+        check(!current.isOperativeSuspended) {
+            "OPERATIVE_SUSPENDED: Cuenta empresarial activa. Debes liquidar tu deuda acumulada para continuar operando."
+        }
+
+        // Siempre se otorga en tramos exactos de ₡3,000 CRC
+        val actualAdvance = ADVANCE_TRANCHE_AMOUNT_CRC
+
+        val advanceId = "ADV-" + UUID.randomUUID().toString().take(8).uppercase()
+        val newDebt = current.accumulatedAdvanceDebtCrc + actualAdvance
+        val newBalance = current.balanceCrc + actualAdvance
+
+        val topup = SpecialistTopup(
+            id = advanceId,
+            specialistId = specialistId,
+            serviceVertical = serviceVertical,
+            amountCrc = actualAdvance,
+            referenceNumber = "PRESTAMO-3000-$advanceId",
+            senderPhoneOrName = ENTERPRISE_ENTITY_NAME,
+            status = "APPROVED",
+            submittedAtEpochMs = System.currentTimeMillis(),
+            decisionReason = "Préstamo operativo de ₡3,000 CRC aprobado. Deuda acumulada: ₡${newDebt} CRC. Liquidación obligatoria al habilitar cuenta empresarial oficial.",
+        )
+
+        val updatedState = current.copy(
+            balanceCrc = newBalance,
+            accumulatedAdvanceDebtCrc = newDebt,
+            isOperativeLockedDueToDebt = current.isEnterpriseSettlementMandatory && newDebt > 0L && newBalance <= MIN_OPERATIVE_BALANCE_THRESHOLD_CRC,
+            topups = listOf(topup) + current.topups.filterNot { it.id == advanceId }
+        )
+
+        updateState(context, updatedState, expectedOwner = owner)
+        recordInGlobalTrustQueue(context, topup, owner)
         return topup
     }
 

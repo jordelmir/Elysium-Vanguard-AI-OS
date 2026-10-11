@@ -4,6 +4,7 @@ import com.elysium369.meet.ui.components.AnimatedNeonIcon
 
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -650,9 +651,6 @@ fun VehiclesTabContent(
     }
 }
 
-// ══════════════════════════════════════════════════════
-// TAB CONTENT: MESSAGING
-// ══════════════════════════════════════════════════════
 @Composable
 fun MessagingTabContent(
     recentChats: List<ChatMessageEntity>,
@@ -662,50 +660,139 @@ fun MessagingTabContent(
     onSubmitDvir: (String, Boolean, Boolean, Boolean, Boolean, Boolean) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var activeFilter by remember { mutableStateOf("Todos") }
     var showNewChatDialog by remember { mutableStateOf(false) }
+
+    val meshRoute by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeRoute.collectAsState()
+    val peersCount by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.connectedPeersCount.collectAsState()
+    val isWifiMeshOn by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.isWifiMeshEnabled.collectAsState()
+    val isBleMeshOn by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.isBleMeshEnabled.collectAsState()
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp)
     ) {
+        // ── Top Mesh Presence Strip (WhatsApp / Elysium Telemetry) ──
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 10.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = Color(0xFF091222),
+            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF162A48))
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(meshRoute.badgeIcon, fontSize = 14.sp)
+                    Column {
+                        Text(
+                            text = "ESTADO DE RED: ${meshRoute.displayName.uppercase()}",
+                            color = Color(0xFF00D9FF),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 10.sp
+                        )
+                        Text(
+                            text = if (isWifiMeshOn || isBleMeshOn) "Transmitiendo por Malla P2P · $peersCount nodos cerca" else "Radios Mesh apagadas",
+                            color = MeetColors.textSecondary,
+                            fontSize = 9.sp
+                        )
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (isWifiMeshOn) Color(0xFF00F0FF).copy(alpha = 0.2f) else Color(0xFF22344E))
+                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        text = if (isWifiMeshOn) "WIFI MESH ON" else "BLE ON",
+                        color = if (isWifiMeshOn) Color(0xFF00F0FF) else Color(0xFF9D00FF),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 9.sp
+                    )
+                }
+            }
+        }
+
         // Search conversations bar
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Buscar chofer o reporte...", color = MeetColors.textSecondary) },
-            leadingIcon = { AnimatedNeonIcon(Icons.Default.Search, contentDescription = null, tint = MeetColors.textSecondary) },
+            placeholder = { Text("Buscar contacto, chat o reporte...", color = MeetColors.textSecondary, fontSize = 12.sp) },
+            leadingIcon = { AnimatedNeonIcon(Icons.Default.Search, contentDescription = null, tint = MeetColors.electricBlue) },
+            trailingIcon = {
+                if (searchQuery.isNotEmpty()) {
+                    IconButton(onClick = { searchQuery = "" }) {
+                        Icon(Icons.Default.Clear, contentDescription = "Limpiar", tint = MeetColors.textSecondary, modifier = Modifier.size(16.dp))
+                    }
+                }
+            },
             singleLine = true,
-            shape = RoundedCornerShape(12.dp),
+            shape = RoundedCornerShape(14.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = MeetColors.electricBlue,
-                unfocusedBorderColor = MeetColors.backgroundDark,
-                focusedContainerColor = MeetColors.backgroundDeep,
-                unfocusedContainerColor = MeetColors.backgroundDeep,
+                unfocusedBorderColor = Color(0xFF152238),
+                focusedContainerColor = Color(0xFF070E1A),
+                unfocusedContainerColor = Color(0xFF070E1A),
                 focusedTextColor = Color.White,
                 unfocusedTextColor = Color.White
             )
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // ── WhatsApp-Inspired Quick Filter Chips ──
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("Todos", "No leídos", "Flotas", "Red Mesh").forEach { filter ->
+                val isSelected = activeFilter == filter
+                Surface(
+                    onClick = { activeFilter = filter },
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isSelected) Color(0xFF00F0FF).copy(alpha = 0.18f) else Color(0xFF0C1628),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (isSelected) Color(0xFF00F0FF) else Color(0xFF1B2C47)
+                    )
+                ) {
+                    Text(
+                        text = filter,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        color = if (isSelected) Color.White else MeetColors.textSecondary,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
 
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            PhantomSectionHeader(label = "CHATS ACTIVOS", accentColor = MeetColors.electricBlue)
+            PhantomSectionHeader(label = "CONVERSACIONES (${recentChats.size})", accentColor = MeetColors.electricBlue)
             TextButton(onClick = { showNewChatDialog = true }) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    AnimatedNeonIcon(Icons.Default.Email, contentDescription = null, tint = MeetColors.electricBlue, modifier = Modifier.size(16.dp))
+                    AnimatedNeonIcon(Icons.Default.AddComment, contentDescription = null, tint = MeetColors.neonGreen, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Nuevo Chat", color = MeetColors.electricBlue, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("Nuevo Chat", color = MeetColors.neonGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
         if (recentChats.isEmpty()) {
             Box(
@@ -715,10 +802,10 @@ fun MessagingTabContent(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("No hay chats iniciados. Selecciona un chofer.", color = MeetColors.textSecondary, fontSize = 13.sp)
+                    Text("No hay conversaciones iniciadas en esta flota.", color = MeetColors.textSecondary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(12.dp))
                     EliteButton(
-                        text = "Iniciar Chat",
+                        text = "Iniciar Nueva Conversación",
                         onClick = { showNewChatDialog = true }
                     )
                 }
@@ -771,6 +858,8 @@ fun MessagingTabContent(
 }
 
 // ══════════════════════════════════════════════════════
+// CHAT ROW ITEM (WhatsApp Layout + Elysium 3D Neon)
+// ══════════════════════════════════════════════════════
 
 @Composable
 fun ChatRowItem(
@@ -782,8 +871,9 @@ fun ChatRowItem(
     val formattedTime = remember(message.timestamp) { timeFormat.format(Date(message.timestamp)) }
     
     EliteCard(
-        glowColor = MeetColors.electricBlue.copy(alpha = 0.05f),
-        backgroundColor = MeetColors.cardBackground,
+        glowColor = MeetColors.electricBlue.copy(alpha = 0.08f),
+        backgroundColor = Color(0xFF0B1424),
+        borderColor = Color(0xFF162540),
         modifier = Modifier.clickable { onClick() }
     ) {
         Row(
@@ -792,23 +882,33 @@ fun ChatRowItem(
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Avatar
+            // ── Avatar 3D con indicador de presencia en Malla ──
             Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(46.dp)
                     .clip(CircleShape)
                     .background(
                         Brush.linearGradient(
-                            listOf(MeetColors.electricBlue, MeetColors.cyberCyan)
+                            listOf(Color(0xFF00D9FF), Color(0xFF7928CA))
                         )
-                    ),
+                    )
+                    .border(1.5.dp, Color(0xFF00F0FF).copy(alpha = 0.6f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     text = partnerId.take(2).uppercase(),
                     color = Color.Black,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontWeight = FontWeight.Black,
+                    fontSize = 15.sp
+                )
+                // Indicador de señal Mesh / Nube en el avatar
+                Box(
+                    modifier = Modifier
+                        .size(11.dp)
+                        .align(Alignment.BottomEnd)
+                        .clip(CircleShape)
+                        .background(Color(0xFF39FF66))
+                        .border(1.5.dp, Color(0xFF050B15), CircleShape)
                 )
             }
             
@@ -832,18 +932,62 @@ fun ChatRowItem(
                         fontSize = 10.sp
                     )
                 }
+
                 Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = when (message.messageType) {
-                        "DTC_ALERT" -> "⚠️ Reporte de Diagnóstico / Inspección"
-                        "AUDIO" -> "🎙️ Nota de voz"
-                        "FILE" -> "📁 Archivo adjunto"
-                        else -> message.messageText ?: ""
-                    },
-                    color = MeetColors.textSecondary,
-                    fontSize = 12.sp,
-                    maxLines = 1
-                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val iconPrefix = when (message.messageType) {
+                            "IMAGE" -> "📷 Foto"
+                            "AUDIO" -> "🎙️ Nota de voz (${message.durationSeconds}s)"
+                            "CALL" -> if (message.messageText?.contains("Videollamada") == true) "📹 Videollamada Mesh" else "📞 Llamada de voz Mesh"
+                            "DTC_ALERT" -> "⚠️ Alerta de Motor"
+                            "FILE" -> "📁 Archivo"
+                            else -> message.messageText ?: ""
+                        }
+                        Text(
+                            text = iconPrefix,
+                            color = when (message.messageType) {
+                                "IMAGE" -> Color(0xFF00F0FF)
+                                "AUDIO" -> Color(0xFF39FF66)
+                                "CALL" -> if (message.messageText?.contains("Videollamada") == true) Color(0xFF00D9FF) else Color(0xFF00FF88)
+                                "DTC_ALERT" -> MeetColors.error
+                                else -> MeetColors.textSecondary
+                            },
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            fontWeight = if (message.messageType in listOf("IMAGE", "AUDIO", "CALL")) FontWeight.SemiBold else FontWeight.Normal
+                        )
+                    }
+
+                    // Ticks de entrega tipo WhatsApp
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        when (message.status) {
+                            "DELIVERED_MESH_WIFI" -> {
+                                Text("⚡", fontSize = 10.sp)
+                                Icon(Icons.Default.DoneAll, contentDescription = null, tint = Color(0xFF00F0FF), modifier = Modifier.size(12.dp))
+                            }
+                            "DELIVERED_MESH_BLE" -> {
+                                Text("📡", fontSize = 10.sp)
+                                Icon(Icons.Default.DoneAll, contentDescription = null, tint = Color(0xFF9D00FF), modifier = Modifier.size(12.dp))
+                            }
+                            "DELIVERED", "READ", "DELIVERED_CLOUD" -> {
+                                Icon(Icons.Default.DoneAll, contentDescription = null, tint = Color(0xFF39FF66), modifier = Modifier.size(12.dp))
+                            }
+                            else -> {
+                                Icon(Icons.Default.Check, contentDescription = null, tint = MeetColors.textSecondary, modifier = Modifier.size(12.dp))
+                            }
+                        }
+                    }
+                }
             }
         }
     }
