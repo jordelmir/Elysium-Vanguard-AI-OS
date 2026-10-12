@@ -8604,6 +8604,19 @@ class ObdViewModel @Inject constructor(
         if (ride != null) {
             val role = if (_rideDriverMode.value) "DRIVER" else "PASSENGER"
             markRatingSettled(ride.requestId, role)
+            // If the ride is COMPLETED, clear it as the active ride so reconciliation
+            // doesn't keep re-triggering the rating dialog on every projection refresh.
+            if (ride.serverState == "COMPLETED" && _activeRideRequest.value?.requestId == ride.requestId) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    val ownerId = currentCloudUserId() ?: return@launch
+                    val roleKey = com.elysium369.meet.ride.domain.RideRoleContextPolicy
+                        .selectionOwnerKey(ownerId, _rideDriverMode.value) ?: return@launch
+                    rideDao.clearActiveRideSelection(roleKey)
+                    withContext(Dispatchers.Main) {
+                        applyActiveRide(null)
+                    }
+                }
+            }
         }
         _pendingRatingRide.value = null
     }
@@ -8616,8 +8629,17 @@ class ObdViewModel @Inject constructor(
     fun promptRideRating(ride: RideRequestEntity) {
         val role = if (_rideDriverMode.value) "DRIVER" else "PASSENGER"
         val existingRating = if (_rideDriverMode.value) ride.driverRating else ride.passengerRating
+        // Guard: only prompt if the ride is truly server-COMPLETED, unrated for this role,
+        // not already dismissed, and the current user actually participated in this ride.
+        val myId = currentUserId ?: activePrincipalKernel.current().id
+        val isMyRide = if (_rideDriverMode.value) {
+            ride.assignedDriverId == myId
+        } else {
+            ride.passengerId == myId
+        }
         if (ride.serverVersion > 0L && ride.serverState == "COMPLETED" &&
-            existingRating == null && !isRatingSettled(ride.requestId, role)
+            existingRating == null && !isRatingSettled(ride.requestId, role) &&
+            isMyRide
         ) {
             _pendingRatingRide.value = ride
         }
@@ -8898,9 +8920,20 @@ class ObdViewModel @Inject constructor(
                 return
             }
             if (latest != null && latest.serverVersion > 0L && latest.serverState == "COMPLETED") {
-                withContext(Dispatchers.Main) {
-                    _activeRideRequest.value = latest
-                    promptRideRating(latest)
+                val role = if (_rideDriverMode.value) "DRIVER" else "PASSENGER"
+                if (isRatingSettled(latest.requestId, role)) {
+                    // Already rated/dismissed — stop holding this as active ride
+                    rideDao.clearActiveRideSelectionsForRide(latest.requestId)
+                    withContext(Dispatchers.Main) {
+                        if (_activeRideRequest.value?.requestId == selected.requestId) {
+                            applyActiveRide(null)
+                        }
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        _activeRideRequest.value = latest
+                        promptRideRating(latest)
+                    }
                 }
             }
         }
@@ -9304,7 +9337,7 @@ class ObdViewModel @Inject constructor(
                     currentUserId ?: activePrincipalKernel.current().id
                 }
                 val pVer = passengerVerification.value
-                val phone = pVer?.phone?.takeIf { it.isNotBlank() } ?: "+50663194029"
+                val phone = pVer?.phone?.takeIf { it.isNotBlank() } ?: "+50600000000"
                 val name = if (_rideDriverMode.value) "Pasajero Elysium Test" else (pVer?.fullName ?: "Pasajero Elysium")
                 val priceMinor = (action.priceOffer * 100).toLong()
                 val entity = RideRequestEntity(

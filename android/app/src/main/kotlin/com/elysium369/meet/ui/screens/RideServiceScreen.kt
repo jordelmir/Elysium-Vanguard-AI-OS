@@ -842,10 +842,7 @@ private fun DriverWalletCard(
     message: String?,
     onRecharge: () -> Unit,
 ) {
-    val starter = policy?.starterCreditMinor
     val commission = policy?.commissionBasisPoints?.toDouble()?.div(100)
-    val paymentPolicyAvailable = policy?.sinpePhone?.isNotBlank() == true &&
-        policy.sinpeRecipientName.isNotBlank()
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF07131E)),
         border = BorderStroke(1.dp, MeetColors.cyberCyan.copy(alpha = 0.65f)),
@@ -854,8 +851,7 @@ private fun DriverWalletCard(
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("BILLETERA DEL CHOFER", color = MeetColors.cyberCyan, fontWeight = FontWeight.Black)
             Text(
-                starter?.let { "Saldo promocional inicial: ${CoreMoney.ofCrc(it).formatted()}" }
-                    ?: "Saldo promocional inicial: política no disponible",
+                "Saldo promocional inicial: ₡3,000",
                 color = Color.White,
                 fontWeight = FontWeight.Bold,
             )
@@ -879,18 +875,38 @@ private fun DriverWalletCard(
                     fontSize = 12.sp,
                 )
             }
-            Text("Recarga por SINPE Móvil", color = MeetColors.textSecondary, fontSize = 12.sp)
-            if (paymentPolicyAvailable) {
-                Text("${policy?.sinpePhone} · ${policy?.sinpeRecipientName}", color = Color.White, fontWeight = FontWeight.Bold)
-                Text("El comprobante se valida por el flujo autorizado antes de liberar saldo.", color = MeetColors.warning, fontSize = 11.sp)
-            } else {
-                Text("Datos de recarga no disponibles. Actualiza antes de transferir.", color = MeetColors.warning, fontSize = 11.sp)
+
+            // ── LÍNEA DE PRÉSTAMO OPERATIVO ──
+            Surface(
+                color = Color(0xFF0A1929),
+                shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, MeetColors.neonGreen.copy(alpha = 0.5f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("⚡", fontSize = 14.sp)
+                        Text("LÍNEA DE PRÉSTAMO OPERATIVO", color = Color.White, fontWeight = FontWeight.Black, fontSize = 11.sp)
+                    }
+                    Text(
+                        "Préstamos de ₡3,000 CRC por solicitud · Disponible cuando saldo ≤ ₡400",
+                        color = MeetColors.cyberCyan,
+                        fontSize = 10.sp,
+                    )
+                    Text(
+                        "🛡️ Puedes pedir prestado todo lo que necesites (sin límite de deuda). Cada solicitud te otorga ₡3,000 CRC. Al activarse la cuenta bancaria empresarial oficial de Elysium, deberás liquidar la deuda acumulada para continuar operando, o tu cuenta entrará en pausa temporal.",
+                        color = MeetColors.textMuted,
+                        fontSize = 9.sp,
+                        lineHeight = 12.sp,
+                    )
+                }
             }
+
             Button(
                 onClick = onRecharge,
-                enabled = paymentPolicyAvailable,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("ENVIAR COMPROBANTE DE RECARGA") }
+                colors = ButtonDefaults.buttonColors(containerColor = MeetColors.neonGreen, contentColor = Color.Black),
+            ) { Text("GESTIÓN DE SALDO Y PRÉSTAMOS OPERATIVOS", fontWeight = FontWeight.Black, fontSize = 10.sp) }
             topups.take(3).forEach { topup ->
                 val status = when (topup.status) {
                     "PENDING_REVIEW" -> "PENDIENTE DE REVISIÓN"
@@ -909,10 +925,11 @@ private fun DriverWalletCard(
                     fontWeight = FontWeight.Bold,
                 )
             }
-            message?.let { Text(it, color = MeetColors.neonGreen, fontSize = 11.sp) }
+            message?.let { Text(it, color = MeetColors.warning, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
         }
     }
 }
+
 
 @Composable
 private fun RideFirstAccessGateway(
@@ -3275,7 +3292,7 @@ fun DriverDashboard(
     var walletMessage by remember { mutableStateOf<String?>(null) }
     var walletTopups by remember(driverHomeOwner) { mutableStateOf(emptyList<com.elysium369.meet.ride.data.remote.RideWalletTopup>()) }
     var showTopupDialog by remember { mutableStateOf(false) }
-    var topupAmount by rememberSaveable { mutableStateOf(15000) }
+    var topupAmount by rememberSaveable { mutableStateOf(3000) }
     var pendingTopupAmount by remember { mutableStateOf<Long?>(null) }
     val walletScope = rememberCoroutineScope()
     val dispatchScope = rememberCoroutineScope()
@@ -4138,30 +4155,26 @@ fun DriverDashboard(
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("💰", fontSize = 20.sp)
-                    Text("Recargar saldo del chofer (SINPE)")
+                    Text("Gestión de Saldo y Préstamos")
                 }
             },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "Envía el SINPE Móvil o transferencia bancaria y registra el comprobante. Verificación automática en línea con el correo oficial.",
+                        "Sistema de Préstamo Operativo: Solicita un adelanto de ₡3,000 CRC cuando tu saldo sea ≤ ₡400. La deuda se acumula y deberá liquidarse al vincular la cuenta empresarial oficial.",
                         color = MeetColors.textSecondary,
                         fontSize = 12.sp
                     )
                     Surface(
                         color = Color(0xFF142236),
                         shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(1.dp, MeetColors.cyberCyan.copy(alpha = 0.4f)),
+                        border = BorderStroke(1.dp, MeetColors.neonGreen.copy(alpha = 0.4f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            val currentWalletPolicy = walletPolicy
-                            if (currentWalletPolicy?.sinpePhone?.isNotBlank() == true && currentWalletPolicy.sinpeRecipientName.isNotBlank()) {
-                                Text("📱 SINPE Móvil: ${currentWalletPolicy.sinpePhone}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                Text("👤 Destinatario: ${currentWalletPolicy.sinpeRecipientName}", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            } else {
-                                Text("Los datos de recarga no están disponibles. Cierra este diálogo y actualiza antes de transferir.", color = MeetColors.warning, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
+                            Text("⚡ Préstamo Operativo: ₡3,000 CRC por solicitud", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = MeetColors.neonGreen)
+                            Text("📋 Condición: Saldo actual debe ser ≤ ₡400 CRC", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                            Text("🏢 Elysium Network Corporation — Fideicomiso Operativo", fontSize = 10.sp, color = MeetColors.cyberCyan)
                         }
                     }
 
