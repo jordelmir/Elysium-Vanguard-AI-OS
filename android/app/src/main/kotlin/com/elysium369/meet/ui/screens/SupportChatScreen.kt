@@ -676,15 +676,15 @@ fun ChatBubble(message: ChatMessage) {
     
     val bubbleBg = if (isUser) {
         Brush.linearGradient(
-            colors = listOf(Color(0xFF0F1A30), Color(0xFF0A1324))
+            colors = listOf(Color(0xFF003D5B), Color(0xFF0D253F))
         )
     } else {
         Brush.linearGradient(
-            colors = listOf(Color(0xFF050E18), Color(0xFF03070E))
+            colors = listOf(Color(0xFF071424), Color(0xFF030A14))
         )
     }
 
-    val glowColor = if (isUser) MeetColors.electricBlue else MeetColors.neonGreen
+    val glowColor = if (isUser) Color(0xFF00E5FF) else Color(0xFF39FF66)
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -697,38 +697,43 @@ fun ChatBubble(message: ChatMessage) {
                     RoundedCornerShape(
                         topStart = 16.dp,
                         topEnd = 16.dp,
-                        bottomStart = if (isUser) 16.dp else 2.dp,
-                        bottomEnd = if (isUser) 2.dp else 16.dp
+                        bottomStart = if (isUser) 16.dp else 3.dp,
+                        bottomEnd = if (isUser) 3.dp else 16.dp
                     )
                 )
                 .background(bubbleBg)
                 .border(
                     1.dp,
-                    glowColor.copy(alpha = 0.3f),
+                    glowColor.copy(alpha = if (isUser) 0.6f else 0.4f),
                     RoundedCornerShape(
                         topStart = 16.dp,
                         topEnd = 16.dp,
-                        bottomStart = if (isUser) 16.dp else 2.dp,
-                        bottomEnd = if (isUser) 2.dp else 16.dp
+                        bottomStart = if (isUser) 16.dp else 3.dp,
+                        bottomEnd = if (isUser) 3.dp else 16.dp
                     )
                 )
                 .padding(14.dp)
         ) {
             Text(
                 text = message.content,
-                color = if (isUser) Color.White else MeetColors.textPrimary,
+                color = Color.White,
                 fontSize = 14.sp,
                 lineHeight = 20.sp
             )
         }
         
-        Text(
-            text = if (isUser) "TÚ" else "CO-PILOTO IA",
-            color = MeetColors.textSecondary,
-            fontSize = 9.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp)
-        )
+        Row(
+            modifier = Modifier.padding(top = 4.dp, start = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = if (isUser) "TÚ" else "🤖 CO-PILOTO IA ELYSIUM",
+                color = if (isUser) Color(0xFF00E5FF) else Color(0xFF39FF66),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Black
+            )
+        }
     }
 }
 

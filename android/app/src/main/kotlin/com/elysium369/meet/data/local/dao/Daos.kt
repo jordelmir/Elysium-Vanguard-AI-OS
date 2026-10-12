@@ -270,7 +270,7 @@ interface FleetDao {
     @Query("SELECT * FROM business_profiles WHERE id = :businessId")
     suspend fun getBusinessProfile(businessId: String): BusinessProfileEntity?
 
-    @Query("SELECT * FROM fleets WHERE businessId = :businessId ORDER BY name ASC")
+    @Query("SELECT * FROM fleets WHERE businessId = :businessId OR businessId = 'mesh_p2p' OR :businessId = 'mesh_p2p' ORDER BY createdAt DESC")
     fun getFleetsForBusiness(businessId: String): kotlinx.coroutines.flow.Flow<List<FleetEntity>>
 
     @Query("SELECT * FROM fleet_members WHERE businessId = :businessId")
@@ -342,7 +342,17 @@ interface ChatDao {
     @Query("SELECT COUNT(*) FROM chat_messages WHERE receiverId = :userId AND status != 'READ'")
     fun observeUnreadCount(userId: String): Flow<Int>
 
-    // Universal Direct / Mesh conversations without business restriction
+    // Universal Direct / Mesh conversations without business restriction (Multi-alias support for off-grid Mesh Node IDs & Cloud UUIDs)
+    @Query("""
+        SELECT * FROM chat_messages 
+        WHERE (
+            (senderId IN (:userAIds) AND receiverId IN (:userBIds)) 
+            OR (senderId IN (:userBIds) AND receiverId IN (:userAIds))
+        ) 
+        ORDER BY timestamp ASC
+    """)
+    fun getChatHistoryMultiAlias(userAIds: List<String>, userBIds: List<String>): Flow<List<ChatMessageEntity>>
+
     @Query("""
         SELECT * FROM chat_messages 
         WHERE (
@@ -354,6 +364,20 @@ interface ChatDao {
         ORDER BY timestamp ASC
     """)
     fun getChatHistoryAnyBusiness(userA: String, userB: String): Flow<List<ChatMessageEntity>>
+
+    @Query("""
+        SELECT * FROM chat_messages 
+        WHERE (
+            senderId IN (:userIds) OR receiverId IN (:userIds) 
+            OR senderId = 'local_owner' OR receiverId = 'local_owner'
+        )
+        GROUP BY CASE 
+            WHEN senderId IN (:userIds) OR senderId = 'local_owner' THEN receiverId 
+            ELSE senderId 
+        END
+        ORDER BY timestamp DESC
+    """)
+    fun getAllRecentChatsMultiAlias(userIds: List<String>): Flow<List<ChatMessageEntity>>
 
     @Query("""
         SELECT * FROM chat_messages 

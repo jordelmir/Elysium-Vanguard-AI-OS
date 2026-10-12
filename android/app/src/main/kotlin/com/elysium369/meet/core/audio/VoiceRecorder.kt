@@ -11,6 +11,8 @@ class VoiceRecorder(private val context: Context) {
     private var mediaRecorder: MediaRecorder? = null
     private var currentOutputFile: File? = null
 
+    private var startedAtMs: Long = 0L
+
     /**
      * Start recording audio and save to a temporary file.
      * Returns the File where the recording is stored, or null if starting failed.
@@ -25,6 +27,7 @@ class VoiceRecorder(private val context: Context) {
         }
 
         currentOutputFile = tempFile
+        startedAtMs = System.currentTimeMillis()
 
         // Initialize MediaRecorder according to API version
         mediaRecorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -58,17 +61,35 @@ class VoiceRecorder(private val context: Context) {
      * Stop the current recording and return the recorded File.
      */
     fun stopRecording(): File? {
+        val elapsed = System.currentTimeMillis() - startedAtMs
+        if (elapsed < 500) {
+            try {
+                Thread.sleep(500 - elapsed)
+            } catch (ignored: Exception) {}
+        }
+        var stoppedCleanly = false
         try {
             mediaRecorder?.let {
                 it.stop()
+                stoppedCleanly = true
                 android.util.Log.i("VoiceRecorder", "Audio recording stopped: ${currentOutputFile?.name}")
             }
         } catch (e: Exception) {
             android.util.Log.e("VoiceRecorder", "Failed to stop MediaRecorder gracefully", e)
+            stoppedCleanly = false
         } finally {
             releaseRecorder()
         }
-        return currentOutputFile
+
+        val file = currentOutputFile
+        if (stoppedCleanly && file != null && file.exists() && file.length() > 200) {
+            return file
+        } else {
+            // Descartar archivo inválido o corrupto
+            file?.let { if (it.exists()) it.delete() }
+            currentOutputFile = null
+            return null
+        }
     }
 
     /**

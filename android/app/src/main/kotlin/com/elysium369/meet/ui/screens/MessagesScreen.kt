@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,7 +22,10 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -580,13 +584,47 @@ private fun ConversationBody(
             }
         }
         Row(Modifier.fillMaxWidth().background(MeetColors.cardBackground).padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Press-and-hold mic button — ALWAYS visible so pointerInput gesture survives recomposition
+            val context = LocalContext.current
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(if (recordingThisConversation) Color(0xFFFF1744) else MeetColors.backgroundDark)
+                    .border(1.dp, if (recordingThisConversation) Color(0xFFFF1744) else MeetColors.neonGreen, CircleShape)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onPress = {
+                                val hasPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                                if (hasPermission) {
+                                    onStartVoice()
+                                    val released = tryAwaitRelease()
+                                    if (released) {
+                                        onStopVoice(replyToEventId)
+                                        replyToEventId = null
+                                    } else {
+                                        onCancelVoice()
+                                    }
+                                } else {
+                                    onStartVoice() // triggers permission launcher
+                                }
+                            }
+                        )
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = if (recordingThisConversation) Icons.Outlined.StopCircle else Icons.Outlined.Mic,
+                    contentDescription = if (recordingThisConversation) "Soltar para enviar" else "Mantener para grabar",
+                    tint = if (recordingThisConversation) Color.White else MeetColors.neonGreen,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
             if (recordingThisConversation) {
-                IconButton({ onStopVoice(replyToEventId); replyToEventId = null }, Modifier.messageAction("stop_voice", "Detener y guardar nota", action={onStopVoice(replyToEventId);replyToEventId=null})) {
-                    Icon(Icons.Outlined.StopCircle, "Detener y guardar nota", tint = MeetColors.error)
+                Text("🔴 Grabando…", color = MeetColors.error, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 6.dp))
+                IconButton(onCancelVoice, Modifier.messageAction("discard_voice", "Descartar nota", action = onCancelVoice)) {
+                    Icon(Icons.Outlined.Delete, "Descartar nota", tint = MeetColors.warning)
                 }
-                IconButton(onCancelVoice,Modifier.messageAction("discard_voice", "Descartar nota", action=onCancelVoice)) { Icon(Icons.Outlined.Delete, "Descartar nota", tint = MeetColors.warning) }
-            } else {
-                IconButton(onStartVoice,Modifier.messageAction("record_voice", "Grabar nota de voz", action=onStartVoice)) { Icon(Icons.Outlined.Mic, "Grabar nota de voz", tint = MeetColors.neonGreen) }
             }
             OutlinedTextField(text, { text = it.take(4000) }, Modifier.weight(1f).agentTextInput(
                 AgentUiControlId("messages.compose.${conversation.id}"), "Mensaje", AgentTextFieldRole.MESSAGE,

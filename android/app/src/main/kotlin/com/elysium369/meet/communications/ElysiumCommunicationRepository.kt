@@ -118,11 +118,14 @@ class ElysiumCommunicationRepository @Inject constructor(
 
     /** Offline delivery retains the same event id for eventual server reconciliation. */
     suspend fun flushNearby() = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        // First try the Physical Mesh Engine (TCP/UDP direct sockets — works over any Wi-Fi/Hotspot)
+        flushMeshBridge()
+        // Then try Google Nearby Connections (BLE/Wi-Fi Direct)
         onlineMutex.withLock {
         val owner=principalKernel.current().id
         val now=System.currentTimeMillis()
         for(event in dao.pendingOnlineEvents(owner)) {
-            if(event.syncState=="NEARBY_ACK" || event.eventType!="TEXT") continue
+            if(event.syncState=="NEARBY_ACK" || event.syncState=="DELIVERED_MESH_WIFI" || event.eventType!="TEXT") continue
             if(principalKernel.current().id!=owner) return@withContext
             val conversation=dao.getOnlineConversation(event.conversationId,owner) ?: continue
             if(conversation.requestState!="ACCEPTED" || conversation.proofState!="SERVER_AUTHORITATIVE") continue
@@ -149,6 +152,121 @@ class ElysiumCommunicationRepository @Inject constructor(
         }
     }
 
+    }
+
+    /**
+     * Bridge: envía mensajes pendientes a través del motor físico Mesh (TCP/UDP o Bluetooth RFCOMM).
+     * - TCP/UDP: funciona sobre cualquier Wi-Fi (hotspot, mesh, LAN)
+     * - Bluetooth RFCOMM: funciona solo con Bluetooth pareado, sin Wi-Fi
+     * Complementa el transporte Nearby de Google, no lo reemplaza.
+     */
+    private suspend fun flushMeshBridge() {
+        try {
+            val meshPeer = com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeLinkedPeer.value
+                ?: com.elysium369.meet.core.mesh.ElysiumMeshGovernance.discoveredPhysicalPeers.value.firstOrNull()
+            val hasBtPeer = com.elysium369.meet.core.mesh.ElysiumBluetoothRfcommTransport.hasConnectedPeer()
+
+            if (meshPeer == null && !hasBtPeer) return // No hay ningún peer conectado
+
+            val owner = principalKernel.current().id
+            for (event in dao.pendingOnlineEvents(owner)) {
+                if (event.syncState == "NEARBY_ACK" || event.syncState == "DELIVERED_MESH_WIFI") continue
+                if (event.eventType !in setOf("TEXT", "AUDIO", "IMAGE", "VOICE_NOTE")) continue
+                val plaintext = try {
+                    cipher.decrypt(
+                        LocalCipherPayload(event.localCiphertextBase64, event.localNonceBase64),
+                        associatedData(event.conversationId, event.eventId, owner)
+                    )
+                } catch (_: Exception) { continue }
+
+                // Determine transport: Bluetooth RFCOMM vs TCP
+                val isBtPeer = meshPeer?.ipAddress?.startsWith("bt:") == true || (meshPeer == null && hasBtPeer)
+                var delivered = false
+
+                when (event.eventType) {
+                    "TEXT" -> {
+                        delivered = if (isBtPeer || (meshPeer == null && hasBtPeer)) {
+                            com.elysium369.meet.core.mesh.ElysiumBluetoothRfcommTransport.sendText(
+                                meshPeer?.ipAddress, owner, event.eventId, plaintext
+                            )
+                        } else {
+                            val chatMsg = com.elysium369.meet.data.local.entities.ChatMessageEntity(
+                                id = event.eventId, businessId = "elysium_comm", senderId = owner,
+                                receiverId = meshPeer!!.nodeId, messageText = plaintext, messageType = "TEXT",
+                                fileLocalPath = null, fileRemoteUrl = null, durationSeconds = 0,
+                                timestamp = event.createdAtEpochMs, status = "PENDING"
+                            )
+                            com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.sendTextMessage(
+                                meshPeer.ipAddress, meshPeer.port, chatMsg
+                            )
+                        }
+                        // TCP fallback to BT if TCP failed
+                        if (!delivered && hasBtPeer && !isBtPeer) {
+                            delivered = com.elysium369.meet.core.mesh.ElysiumBluetoothRfcommTransport.sendText(
+                                null, owner, event.eventId, plaintext
+                            )
+                        }
+                        if (delivered) android.util.Log.i("CommRepo", "TEXT enviado por ${if (isBtPeer) "BT" else "TCP"}")
+                    }
+                    "AUDIO", "VOICE_NOTE" -> {
+                        val audioFile = CommunicationMediaCodec.file(applicationContext, owner, event.eventId, "AUDIO")
+                        if (!audioFile.exists()) continue
+                        delivered = if (isBtPeer || (meshPeer == null && hasBtPeer)) {
+                            com.elysium369.meet.core.mesh.ElysiumBluetoothRfcommTransport.sendAudioFile(
+                                meshPeer?.ipAddress, owner, event.eventId, audioFile
+                            )
+                        } else {
+                            val chatMsg = com.elysium369.meet.data.local.entities.ChatMessageEntity(
+                                id = event.eventId, businessId = "elysium_comm", senderId = owner,
+                                receiverId = meshPeer!!.nodeId, messageText = null, messageType = "AUDIO",
+                                fileLocalPath = audioFile.absolutePath, fileRemoteUrl = null, durationSeconds = 0,
+                                timestamp = event.createdAtEpochMs, status = "PENDING"
+                            )
+                            com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.sendAudioFile(
+                                meshPeer.ipAddress, meshPeer.port, chatMsg, audioFile, 0
+                            )
+                        }
+                        if (!delivered && hasBtPeer && !isBtPeer) {
+                            delivered = com.elysium369.meet.core.mesh.ElysiumBluetoothRfcommTransport.sendAudioFile(
+                                null, owner, event.eventId, audioFile
+                            )
+                        }
+                        if (delivered) android.util.Log.i("CommRepo", "AUDIO enviado por ${if (isBtPeer) "BT" else "TCP"}")
+                    }
+                    "IMAGE" -> {
+                        val imageFile = CommunicationMediaCodec.file(applicationContext, owner, event.eventId, "IMAGE")
+                        if (!imageFile.exists()) continue
+                        delivered = if (isBtPeer || (meshPeer == null && hasBtPeer)) {
+                            com.elysium369.meet.core.mesh.ElysiumBluetoothRfcommTransport.sendImageFile(
+                                meshPeer?.ipAddress, owner, event.eventId, imageFile
+                            )
+                        } else {
+                            val chatMsg = com.elysium369.meet.data.local.entities.ChatMessageEntity(
+                                id = event.eventId, businessId = "elysium_comm", senderId = owner,
+                                receiverId = meshPeer!!.nodeId, messageText = null, messageType = "IMAGE",
+                                fileLocalPath = imageFile.absolutePath, fileRemoteUrl = null, durationSeconds = 0,
+                                timestamp = event.createdAtEpochMs, status = "PENDING"
+                            )
+                            com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.sendImageFile(
+                                meshPeer.ipAddress, meshPeer.port, chatMsg, imageFile
+                            )
+                        }
+                        if (!delivered && hasBtPeer && !isBtPeer) {
+                            delivered = com.elysium369.meet.core.mesh.ElysiumBluetoothRfcommTransport.sendImageFile(
+                                null, owner, event.eventId, imageFile
+                            )
+                        }
+                        if (delivered) android.util.Log.i("CommRepo", "IMAGE enviado por ${if (isBtPeer) "BT" else "TCP"}")
+                    }
+                }
+                if (delivered) {
+                    dao.markEventSynced(event.eventId, owner, "DELIVERED_MESH_WIFI")
+                }
+            }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (e: Exception) {
+            android.util.Log.w("CommRepo", "flushMeshBridge error: ${e.message}")
+        }
     }
 
     private suspend fun receiveNearby(endpoint:String,bytes:ByteArray) {
@@ -794,7 +912,7 @@ class ElysiumCommunicationRepository @Inject constructor(
         CommunicationMediaCodec.materialize(applicationContext,owner.id,id,type,payload)
         val local=cipher.encrypt(payload,associatedData(conversationId,id,owner.id))
         val inserted=dao.appendEvent(CommunicationEventEntity(eventId=id,conversationId=conversationId,ownerPrincipalId=owner.id,senderPrincipalId=owner.id,senderDeviceId=transportDeviceId(owner.id),eventType=type,localCiphertextBase64=local.ciphertextBase64,localNonceBase64=local.nonceBase64,replyToEventId=replyTo,syncState="PENDING_REMOTE",createdAtEpochMs=System.currentTimeMillis()))
-        if(inserted) { scheduleOnlineSync(expectedOwner); communicationScope.launch { synchronizeOnline() }; return SendMessageOutcome.SentLocally(id) }
+        if(inserted) { scheduleOnlineSync(expectedOwner); communicationScope.launch { synchronizeOnline() }; communicationScope.launch { flushMeshBridge() }; return SendMessageOutcome.SentLocally(id) }
         return SendMessageOutcome.ConversationUnavailable
     }
 
@@ -836,8 +954,25 @@ class ElysiumCommunicationRepository @Inject constructor(
                 )
                 StartCallOutcome.Ready(callId)
             }
-            CallTransportOutcome.NotConfigured -> failedCall(base, "SERVER_TRANSPORT_NOT_CONFIGURED").let {
-                StartCallOutcome.ServerTransportNotConfigured
+            CallTransportOutcome.NotConfigured -> {
+                // Fallback: try Mesh P2P when server call transport is not configured
+                val meshPeerFallback = com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeLinkedPeer.value
+                    ?: com.elysium369.meet.core.mesh.ElysiumMeshGovernance.discoveredPhysicalPeers.value.firstOrNull()
+                if (meshPeerFallback != null) {
+                    try {
+                        com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.sendCallSignal(
+                            meshPeerFallback.ipAddress, meshPeerFallback.port, "RING_AUDIO", principal.id
+                        )
+                        com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.startAudioCallStreaming(meshPeerFallback.ipAddress)
+                        dao.upsertCall(base.copy(state = "RINGING", transportProofState = "MESH_P2P"))
+                        android.util.Log.i("CommRepo", "Llamada audio por Mesh P2P (server no configurado) a ${meshPeerFallback.ipAddress}")
+                        StartCallOutcome.Ringing(callId)
+                    } catch (e: Exception) {
+                        failedCall(base, "SERVER_TRANSPORT_NOT_CONFIGURED").let { StartCallOutcome.ServerTransportNotConfigured }
+                    }
+                } else {
+                    failedCall(base, "SERVER_TRANSPORT_NOT_CONFIGURED").let { StartCallOutcome.ServerTransportNotConfigured }
+                }
             }
             CallTransportOutcome.AuthenticationRequired -> failedCall(base, "AUTHENTICATION_REQUIRED").let {
                 StartCallOutcome.AuthenticationRequired
@@ -845,8 +980,26 @@ class ElysiumCommunicationRepository @Inject constructor(
             CallTransportOutcome.RejectedInsecureEndpoint -> failedCall(base, "INSECURE_ENDPOINT_REJECTED").let {
                 StartCallOutcome.InsecureEndpointRejected
             }
-            is CallTransportOutcome.Failed -> failedCall(base, outcome.safeCode).let {
-                StartCallOutcome.Failed(outcome.safeCode)
+            is CallTransportOutcome.Failed -> {
+                // Fallback: try Mesh TCP P2P call if a mesh peer is connected
+                val meshPeer = com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeLinkedPeer.value
+                    ?: com.elysium369.meet.core.mesh.ElysiumMeshGovernance.discoveredPhysicalPeers.value.firstOrNull()
+                if (meshPeer != null) {
+                    try {
+                        com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.sendCallSignal(
+                            meshPeer.ipAddress, meshPeer.port, "RING_AUDIO", principal.id
+                        )
+                        com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.startAudioCallStreaming(meshPeer.ipAddress)
+                        dao.upsertCall(base.copy(state = "RINGING", transportProofState = "MESH_P2P"))
+                        android.util.Log.i("CommRepo", "Llamada audio iniciada por Mesh TCP a ${meshPeer.ipAddress}")
+                        StartCallOutcome.Ringing(callId)
+                    } catch (e: Exception) {
+                        android.util.Log.w("CommRepo", "Mesh call fallback failed: ${e.message}")
+                        failedCall(base, outcome.safeCode).let { StartCallOutcome.Failed(outcome.safeCode) }
+                    }
+                } else {
+                    failedCall(base, outcome.safeCode).let { StartCallOutcome.Failed(outcome.safeCode) }
+                }
             }
         }
     }

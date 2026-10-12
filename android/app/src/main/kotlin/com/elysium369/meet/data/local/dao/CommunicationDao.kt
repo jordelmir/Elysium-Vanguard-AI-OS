@@ -126,6 +126,9 @@ interface CommunicationDao {
     @Query("UPDATE communication_events SET syncState='NEARBY_ACK' WHERE eventId=:id AND ownerPrincipalId=:owner AND conversationId=:conversation AND senderPrincipalId=:owner AND syncState='PENDING_REMOTE'")
     suspend fun acknowledgeNearbyEvent(id:String,owner:String,conversation:String)
 
+    @Query("UPDATE communication_events SET syncState=:state WHERE eventId=:id AND ownerPrincipalId=:owner AND senderPrincipalId=:owner AND syncState IN ('PENDING_REMOTE','LOCAL_ONLY')")
+    suspend fun markEventSynced(id: String, owner: String, state: String)
+
     @Query("SELECT * FROM communication_conversations WHERE conversationId = :id AND ownerPrincipalId = :owner LIMIT 1")
     suspend fun getOnlineConversation(id: String, owner: String): CommunicationConversationEntity?
 

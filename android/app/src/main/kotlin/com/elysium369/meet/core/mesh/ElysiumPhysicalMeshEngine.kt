@@ -12,6 +12,7 @@ import android.media.MediaRecorder
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Environment
 import android.provider.Settings
 import android.util.Log
 import androidx.room.Room
@@ -61,7 +62,7 @@ object ElysiumPhysicalMeshEngine {
 
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var appContext: Context? = null
-    private var database: MeetDatabase? = null
+    var database: MeetDatabase? = null
 
     // ── Identidad local del nodo ──
     var localNodeId: String = "EVG-NODE"
@@ -76,6 +77,8 @@ object ElysiumPhysicalMeshEngine {
     private val _remoteVideoFrame = MutableStateFlow<Bitmap?>(null)
     val remoteVideoFrame: StateFlow<Bitmap?> = _remoteVideoFrame.asStateFlow()
 
+    val localVideoFrame: StateFlow<Bitmap?> = ElysiumRealCameraStreamer.localCameraFrame
+
     // ── Eventos entrantes para la UI ──
     data class IncomingCallSignal(
         val callType: String, // "AUDIO" o "VIDEO"
@@ -86,6 +89,9 @@ object ElysiumPhysicalMeshEngine {
 
     private val _incomingCallEvents = MutableSharedFlow<IncomingCallSignal>(extraBufferCapacity = 8)
     val incomingCallEvents: SharedFlow<IncomingCallSignal> = _incomingCallEvents.asSharedFlow()
+
+    private val _callAcceptedEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val callAcceptedEvents: SharedFlow<String> = _callAcceptedEvents.asSharedFlow()
 
     private val _callTerminatedEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val callTerminatedEvents: SharedFlow<String> = _callTerminatedEvents.asSharedFlow()
@@ -106,6 +112,18 @@ object ElysiumPhysicalMeshEngine {
 
     // Tabla de pares descubiertos localmente
     private val discoveredPeersMap = ConcurrentHashMap<String, PhysicalMeshPeer>()
+
+    /** Public API for BluetoothRfcommTransport to push received messages */
+    fun emitReceivedMessage(msg: ChatMessageEntity) {
+        engineScope.launch { _messageReceivedEvents.emit(msg) }
+    }
+
+    /** Public API for BluetoothRfcommTransport to push incoming call signals */
+    fun emitIncomingCall(callType: String, callerId: String, callerName: String, callerIp: String) {
+        engineScope.launch {
+            _incomingCallEvents.emit(IncomingCallSignal(callType, callerId, callerName, callerIp))
+        }
+    }
 
     /**
      * Inicializa el motor físico en la aplicación
@@ -154,6 +172,22 @@ object ElysiumPhysicalMeshEngine {
         startAudioStreamReceiver()
         startVideoStreamReceiver()
         startPeerPruningJob()
+
+        // 4. Iniciar transporte Bluetooth RFCOMM (funciona sin Wi-Fi)
+        try {
+            ElysiumBluetoothRfcommTransport.start(ctx)
+            Log.i(TAG, "Bluetooth RFCOMM transport iniciado")
+        } catch (e: Exception) {
+            Log.w(TAG, "Bluetooth RFCOMM no disponible: ${e.message}")
+        }
+
+        // 5. Iniciar motor de transferencia de archivos P2P (puerto 36904)
+        try {
+            ElysiumFileTransferEngine.start(ctx)
+            Log.i(TAG, "File Transfer Engine iniciado")
+        } catch (e: Exception) {
+            Log.w(TAG, "File Transfer Engine no disponible: ${e.message}")
+        }
     }
 
     /**
@@ -343,6 +377,38 @@ object ElysiumPhysicalMeshEngine {
 
             val ctx = appContext
 
+            // ── AUTO-LINK: register sender as peer and auto-link if not linked ──
+            val clientIpAddr = socket.inetAddress?.hostAddress ?: ""
+            if (clientIpAddr.isNotBlank()) {
+                val incomingPeer = PhysicalMeshPeer(
+                    nodeId = senderId,
+                    deviceName = senderName,
+                    ipAddress = clientIpAddr,
+                    port = TCP_DATA_PORT,
+                    role = "CONDUCTOR",
+                    lastSeenMs = System.currentTimeMillis(),
+                    isLinked = true
+                )
+                discoveredPeersMap[senderId] = incomingPeer
+                publishPeers()
+                // Auto-link if we don't have an active linked peer, or it's the same node
+                val currentLinked = ElysiumMeshGovernance.activeLinkedPeer.value
+                if (currentLinked == null || currentLinked.nodeId == senderId) {
+                    ElysiumMeshGovernance.linkPeer(incomingPeer)
+                    Log.i(TAG, "Auto-linked peer $senderName ($clientIpAddr) — enlace bidireccional")
+                }
+            }
+
+            // Handle LINK_REQUEST first (explicit bidirectional link)
+            if (frameType == "LINK_REQUEST") {
+                Log.i(TAG, "LINK_REQUEST recibido de $senderName ($clientIpAddr)")
+                val dos2 = DataOutputStream(BufferedOutputStream(socket.getOutputStream()))
+                dos2.writeUTF("ACK|LINK_ACCEPTED")
+                dos2.flush()
+                socket.close()
+                return@withContext
+            }
+
             when (frameType) {
                 "TEXT", "DTC_ALERT", "SOS_EMERGENCY" -> {
                     val textBytes = ByteArray(dataLen)
@@ -377,7 +443,9 @@ object ElysiumPhysicalMeshEngine {
                     val audioBytes = ByteArray(dataLen)
                     dis.readFully(audioBytes)
 
-                    val audioFile = File(ctx?.cacheDir ?: File("/tmp"), "mesh_voice_${msgId}.m4a")
+                    val targetDir = ctx?.cacheDir ?: File("/tmp")
+                    targetDir.mkdirs()
+                    val audioFile = File(targetDir, "mesh_voice_${msgId}.m4a")
                     audioFile.writeBytes(audioBytes)
 
                     val entity = ChatMessageEntity(
@@ -402,21 +470,48 @@ object ElysiumPhysicalMeshEngine {
                     dos.flush()
                 }
 
-                "IMAGE" -> {
-                    val imageBytes = ByteArray(dataLen)
-                    dis.readFully(imageBytes)
+                "IMAGE", "FILE" -> {
+                    val isImg = frameType == "IMAGE" || extra.substringAfterLast(".").lowercase() in listOf("jpg", "jpeg", "png", "webp", "gif")
+                    val defaultName = if (isImg) "mesh_img_${msgId}.jpg" else "mesh_file_${msgId}"
+                    val rawName = if (extra.isNotBlank()) extra else defaultName
 
-                    val imgFile = File(ctx?.cacheDir ?: File("/tmp"), "mesh_img_${msgId}.jpg")
-                    imgFile.writeBytes(imageBytes)
+                    val targetDir = try {
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).apply { mkdirs() }
+                    } catch (e: Exception) {
+                        ctx?.cacheDir ?: File("/tmp").apply { mkdirs() }
+                    }
+
+                    var targetFile = File(targetDir, rawName)
+                    var counter = 1
+                    while (targetFile.exists()) {
+                        val baseName = rawName.substringBeforeLast(".")
+                        val ext = if (rawName.contains(".")) ".${rawName.substringAfterLast(".")}" else ""
+                        targetFile = File(targetDir, "${baseName}_$counter$ext")
+                        counter++
+                    }
+
+                    val fos = FileOutputStream(targetFile)
+                    val bos = BufferedOutputStream(fos)
+                    val buffer = ByteArray(32768)
+                    var remaining = dataLen
+                    while (remaining > 0) {
+                        val read = dis.read(buffer, 0, minOf(buffer.size, remaining))
+                        if (read == -1) break
+                        bos.write(buffer, 0, read)
+                        remaining -= read
+                    }
+                    bos.flush()
+                    bos.close()
+                    fos.close()
 
                     val entity = ChatMessageEntity(
                         id = msgId,
                         businessId = "mesh_p2p",
                         senderId = senderId,
                         receiverId = localNodeId,
-                        messageText = null,
-                        messageType = "IMAGE",
-                        fileLocalPath = imgFile.absolutePath,
+                        messageText = targetFile.name,
+                        messageType = if (isImg) "IMAGE" else "FILE",
+                        fileLocalPath = targetFile.absolutePath,
                         fileRemoteUrl = null,
                         durationSeconds = 0,
                         timestamp = System.currentTimeMillis(),
@@ -425,15 +520,17 @@ object ElysiumPhysicalMeshEngine {
 
                     database?.chatDao()?.insertMessage(entity)
                     _messageReceivedEvents.emit(entity)
-                    ElysiumMeshGovernance.recordPayloadSent(MeshPayloadType.IMAGE)
+                    ElysiumMeshGovernance.recordPayloadSent(if (isImg) MeshPayloadType.IMAGE else MeshPayloadType.TEXT)
 
                     dos.writeUTF("ACK|$msgId")
                     dos.flush()
+                    Log.i(TAG, "✅ Archivo ${targetFile.name} ($dataLen bytes) guardado en ${targetFile.absolutePath}")
                 }
 
                 "CALL_SIGNAL" -> {
                     val signal = extra // "RING_AUDIO", "RING_VIDEO", "ACCEPT", "REJECT", "END"
                     val clientIp = socket.inetAddress.hostAddress ?: ""
+                    Log.i(TAG, "Señal de llamada recibida: $signal desde $senderId ($clientIp)")
                     when (signal) {
                         "RING_AUDIO" -> {
                             _incomingCallEvents.emit(IncomingCallSignal("AUDIO", senderId, senderName, clientIp))
@@ -444,6 +541,7 @@ object ElysiumPhysicalMeshEngine {
                         "ACCEPT" -> {
                             startAudioCallStreaming(clientIp)
                             startVideoCallStreaming(clientIp)
+                            _callAcceptedEvents.emit(senderId)
                         }
                         "END", "REJECT" -> {
                             stopAudioCallStreaming()
@@ -463,7 +561,31 @@ object ElysiumPhysicalMeshEngine {
     }
 
     /**
-     * ── 4. CLIENTE P2P DE ENVÍO DE MENSAJES Y ARCHIVOS ──
+     * ── 4. ENVÍO DE LINK_REQUEST BIDIRECCIONAL ──
+     * Cuando un usuario da "conectar" a un peer, envía un LINK_REQUEST TCP
+     * para que el otro lado auto-linkee de vuelta.
+     */
+    fun sendLinkRequest(targetIp: String, targetPort: Int) {
+        engineScope.launch(Dispatchers.IO) {
+            try {
+                val socket = Socket()
+                socket.connect(InetSocketAddress(targetIp, targetPort), 3000)
+                val dos = DataOutputStream(BufferedOutputStream(socket.getOutputStream()))
+                val dis = DataInputStream(BufferedInputStream(socket.getInputStream()))
+                val header = "LINK_REQUEST|link|$localNodeId|$localDeviceName|||0"
+                dos.writeUTF(header)
+                dos.flush()
+                val ack = dis.readUTF()
+                socket.close()
+                Log.i(TAG, "LINK_REQUEST enviado a $targetIp → respuesta: $ack")
+            } catch (e: Exception) {
+                Log.w(TAG, "No se pudo enviar LINK_REQUEST a $targetIp: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * ── 5. CLIENTE P2P DE ENVÍO DE MENSAJES Y ARCHIVOS ──
      */
     suspend fun sendTextMessage(
         targetIp: String,
@@ -541,32 +663,51 @@ object ElysiumPhysicalMeshEngine {
         message: ChatMessageEntity,
         imageFile: File,
         senderName: String = localDeviceName
+    ): Boolean = sendGenericFile(targetIp, targetPort, message, imageFile, senderName)
+
+    suspend fun sendGenericFile(
+        targetIp: String,
+        targetPort: Int,
+        message: ChatMessageEntity,
+        file: File,
+        senderName: String = localDeviceName
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            if (!imageFile.exists()) return@withContext false
-            val imageBytes = imageFile.readBytes()
+            if (!file.exists()) return@withContext false
+            val isImg = file.extension.lowercase() in listOf("jpg", "jpeg", "png", "webp", "gif")
+            val frameType = if (isImg) "IMAGE" else "FILE"
+            val fileLength = file.length()
 
             val socket = Socket()
             socket.connect(InetSocketAddress(targetIp, targetPort), 5000)
             val dos = DataOutputStream(BufferedOutputStream(socket.getOutputStream()))
             val dis = DataInputStream(BufferedInputStream(socket.getInputStream()))
 
-            val header = "IMAGE|${message.id}|$localNodeId|$senderName|${message.receiverId}||${imageBytes.size}"
+            val header = "$frameType|${message.id}|$localNodeId|$senderName|${message.receiverId}|${file.name}|$fileLength"
             dos.writeUTF(header)
-            dos.write(imageBytes)
+
+            val fis = FileInputStream(file)
+            val bis = BufferedInputStream(fis)
+            val buffer = ByteArray(32768)
+            var bytesRead: Int
+            while (bis.read(buffer).also { bytesRead = it } != -1) {
+                dos.write(buffer, 0, bytesRead)
+            }
             dos.flush()
+            bis.close()
+            fis.close()
 
             val ack = dis.readUTF()
             socket.close()
 
             if (ack.startsWith("ACK")) {
                 database?.chatDao()?.updateMessageStatus(message.id, "DELIVERED_MESH_WIFI")
-                ElysiumMeshGovernance.recordPayloadSent(MeshPayloadType.IMAGE)
+                ElysiumMeshGovernance.recordPayloadSent(if (isImg) MeshPayloadType.IMAGE else MeshPayloadType.TEXT)
                 return@withContext true
             }
             false
         } catch (e: Exception) {
-            Log.e(TAG, "Fallo al enviar imagen a $targetIp:$targetPort", e)
+            Log.e(TAG, "Fallo al enviar archivo ${file.name} a $targetIp:$targetPort", e)
             false
         }
     }
@@ -606,29 +747,86 @@ object ElysiumPhysicalMeshEngine {
 
         engineScope.launch {
             try {
+                val ctx = appContext
+                val am = ctx?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                am?.mode = AudioManager.MODE_IN_COMMUNICATION
+                // Speakerphone OFF by default to prevent echo/feedback when phones are nearby
+                am?.isSpeakerphoneOn = false
+
                 val sampleRate = 16000
                 val channelConfig = AudioFormat.CHANNEL_IN_MONO
                 val audioFormat = AudioFormat.ENCODING_PCM_16BIT
                 val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat).coerceAtLeast(1280)
 
-                audioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                    sampleRate,
-                    channelConfig,
-                    audioFormat,
-                    bufferSize
-                )
+                // Use VOICE_COMMUNICATION source first — it has built-in AEC on most devices
+                var record: AudioRecord? = null
+                try {
+                    record = AudioRecord(
+                        MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                        sampleRate,
+                        channelConfig,
+                        audioFormat,
+                        bufferSize
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "VOICE_COMMUNICATION falló, probando MIC", e)
+                }
 
+                if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+                    try {
+                        record = AudioRecord(
+                            MediaRecorder.AudioSource.MIC,
+                            sampleRate,
+                            channelConfig,
+                            audioFormat,
+                            bufferSize
+                        )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "No se pudo inicializar AudioRecord", e)
+                        return@launch
+                    }
+                }
+
+                // Enable hardware echo cancellation and noise suppression
+                val sessionId = record.audioSessionId
+                try {
+                    if (android.media.audiofx.AcousticEchoCanceler.isAvailable()) {
+                        android.media.audiofx.AcousticEchoCanceler.create(sessionId)?.let {
+                            it.enabled = true
+                            Log.i(TAG, "AcousticEchoCanceler activado")
+                        }
+                    }
+                } catch (e: Exception) { Log.w(TAG, "AEC no disponible: ${e.message}") }
+
+                try {
+                    if (android.media.audiofx.NoiseSuppressor.isAvailable()) {
+                        android.media.audiofx.NoiseSuppressor.create(sessionId)?.let {
+                            it.enabled = true
+                            Log.i(TAG, "NoiseSuppressor activado")
+                        }
+                    }
+                } catch (e: Exception) { Log.w(TAG, "NS no disponible: ${e.message}") }
+
+                try {
+                    if (android.media.audiofx.AutomaticGainControl.isAvailable()) {
+                        android.media.audiofx.AutomaticGainControl.create(sessionId)?.let {
+                            it.enabled = true
+                            Log.i(TAG, "AutomaticGainControl activado")
+                        }
+                    }
+                } catch (e: Exception) { Log.w(TAG, "AGC no disponible: ${e.message}") }
+
+                audioRecord = record
                 val socket = DatagramSocket()
                 audioSocket = socket
                 val targetAddress = InetAddress.getByName(targetIp)
                 val buffer = ByteArray(640) // 20ms por paquete
 
-                audioRecord?.startRecording()
-                Log.i(TAG, "Iniciada captura y streaming de audio P2P a $targetIp:$UDP_AUDIO_PORT")
+                record.startRecording()
+                Log.i(TAG, "Iniciada captura de audio P2P con AEC/NS a $targetIp:$UDP_AUDIO_PORT (speakerphone=OFF)")
 
                 while (isActive && isAudioStreamingActive) {
-                    val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                    val read = record.read(buffer, 0, buffer.size)
                     if (read > 0) {
                         val packet = DatagramPacket(buffer, read, targetAddress, UDP_AUDIO_PORT)
                         socket.send(packet)
@@ -653,6 +851,9 @@ object ElysiumPhysicalMeshEngine {
             audioSocket?.close()
         } catch (ignored: Exception) {}
         audioSocket = null
+
+        val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        am?.mode = AudioManager.MODE_NORMAL
     }
 
     private fun startAudioStreamReceiver() {
@@ -698,8 +899,23 @@ object ElysiumPhysicalMeshEngine {
     }
 
     /**
-     * ── 6. TRANSMISIÓN Y RECEPCIÓN DE VIDEO EN VIVO ──
+     * ── 6. TRANSMISIÓN Y RECEPCIÓN DE VIDEO EN VIVO 100% REAL DE CÁMARA ──
      */
+    fun startVideoCallStreaming(targetIp: String, frontCamera: Boolean = true) {
+        val ctx = appContext ?: return
+        ElysiumRealCameraStreamer.startStreaming(ctx, targetIp, frontCamera)
+    }
+
+    fun flipVideoCallCamera() {
+        val ctx = appContext ?: return
+        ElysiumRealCameraStreamer.flipCamera(ctx)
+    }
+
+    fun stopVideoCallStreaming() {
+        ElysiumRealCameraStreamer.stopStreaming()
+        _remoteVideoFrame.value = null
+    }
+
     fun sendVideoFrame(targetIp: String, bitmap: Bitmap) {
         engineScope.launch {
             try {
@@ -714,63 +930,6 @@ object ElysiumPhysicalMeshEngine {
                 socket.close()
             } catch (ignored: Exception) {}
         }
-    }
-
-    private var isVideoStreamingActive = false
-    private var videoStreamingJob: kotlinx.coroutines.Job? = null
-
-    fun startVideoCallStreaming(targetIp: String) {
-        if (isVideoStreamingActive) return
-        isVideoStreamingActive = true
-        videoStreamingJob = engineScope.launch {
-            val width = 480
-            val height = 360
-            val paint = android.graphics.Paint().apply {
-                color = android.graphics.Color.CYAN
-                textSize = 28f
-                isAntiAlias = true
-            }
-            val bgPaint = android.graphics.Paint().apply {
-                color = android.graphics.Color.rgb(10, 20, 35)
-            }
-            val timeFormat = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.getDefault())
-
-            while (isActive && isVideoStreamingActive) {
-                try {
-                    val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.RGB_565)
-                    val canvas = android.graphics.Canvas(bmp)
-                    canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
-
-                    // Cyber reticle HUD overlay
-                    paint.color = android.graphics.Color.argb(180, 0, 229, 255)
-                    paint.strokeWidth = 2f
-                    paint.style = android.graphics.Paint.Style.STROKE
-                    canvas.drawCircle(width / 2f, height / 2f, 80f, paint)
-                    canvas.drawLine(width / 2f - 100f, height / 2f, width / 2f + 100f, height / 2f, paint)
-                    canvas.drawLine(width / 2f, height / 2f - 100f, width / 2f, height / 2f + 100f, paint)
-
-                    paint.style = android.graphics.Paint.Style.FILL
-                    paint.textSize = 22f
-                    paint.color = android.graphics.Color.WHITE
-                    canvas.drawText("MEET MESH VIDEO P2P", 30f, 40f, paint)
-                    paint.textSize = 18f
-                    paint.color = android.graphics.Color.rgb(57, 255, 102)
-                    canvas.drawText("NODO: $localNodeId", 30f, 75f, paint)
-                    canvas.drawText("SYNC: ${timeFormat.format(java.util.Date())}", 30f, 105f, paint)
-
-                    sendVideoFrame(targetIp, bmp)
-                    bmp.recycle()
-                } catch (ignored: Exception) {}
-                delay(66) // ~15 FPS fluido y liviano para red mesh
-            }
-        }
-    }
-
-    fun stopVideoCallStreaming() {
-        isVideoStreamingActive = false
-        videoStreamingJob?.cancel()
-        videoStreamingJob = null
-        _remoteVideoFrame.value = null
     }
 
     private fun startVideoStreamReceiver() {

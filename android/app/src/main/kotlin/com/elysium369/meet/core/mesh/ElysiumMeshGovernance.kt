@@ -400,6 +400,17 @@ object ElysiumMeshGovernance {
         _meshSignalQuality.value = if (peers.isNotEmpty()) 98 else if (_isWifiHardwareOn.value || _isBleHardwareOn.value) 75 else 0
     }
 
+    /** Register a single discovered peer (used by Bluetooth RFCOMM transport) */
+    fun registerDiscoveredPeer(peer: PhysicalMeshPeer) {
+        _discoveredPhysicalPeers.update { list ->
+            val existing = list.indexOfFirst { it.nodeId == peer.nodeId }
+            if (existing >= 0) list.toMutableList().apply { set(existing, peer) }
+            else list + peer
+        }
+        _connectedPeersCount.value = _discoveredPhysicalPeers.value.size
+        Log.i(TAG, "Peer registrado: ${peer.deviceName} (${peer.ipAddress})")
+    }
+
     /**
      * Vincula un nodo físico específico mediante el botón 1-Toque
      */
@@ -409,6 +420,10 @@ object ElysiumMeshGovernance {
             list.map { if (it.nodeId == peer.nodeId) it.copy(isLinked = true) else it.copy(isLinked = false) }
         }
         Log.i(TAG, "Nodo enlazado 1-Toque: ${peer.deviceName} (${peer.ipAddress}:${peer.port})")
+        // Send LINK_REQUEST to remote peer for bidirectional linking (only for IP-based peers)
+        if (!peer.ipAddress.startsWith("bt:") && peer.port > 0) {
+            ElysiumPhysicalMeshEngine.sendLinkRequest(peer.ipAddress, peer.port)
+        }
     }
 
     fun unlinkPeer() {

@@ -3,6 +3,13 @@ package com.elysium369.meet.ui.screens.chat
 import com.elysium369.meet.ui.components.AnimatedNeonIcon
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
+import android.widget.Toast
+import androidx.core.content.FileProvider
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -67,8 +74,10 @@ fun FleetChatDetailScreen(
 
     val activeVoiceCall by viewModel.activeVoiceCall.collectAsState()
     val activeVideoCall by viewModel.activeVideoCall.collectAsState()
+    val incomingCallPrompt by viewModel.incomingCallPrompt.collectAsState()
     val meshRoute by com.elysium369.meet.core.mesh.ElysiumMeshGovernance.activeRoute.collectAsState()
     val remoteVideoFrame by com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.remoteVideoFrame.collectAsState()
+    val localVideoFrame by com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.localVideoFrame.collectAsState()
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -81,9 +90,9 @@ fun FleetChatDetailScreen(
     ) { uri ->
         uri?.let {
             try {
-                val inputStream = context.contentResolver.openInputStream(uri)
-                val tempFile = File.createTempFile("meet_attachment_", "_file", context.cacheDir)
-                inputStream?.use { input ->
+                val realName = getDisplayNameFromUri(context, uri)
+                val tempFile = File(context.cacheDir, realName)
+                context.contentResolver.openInputStream(uri)?.use { input ->
                     tempFile.outputStream().use { output ->
                         input.copyTo(output)
                     }
@@ -92,6 +101,34 @@ fun FleetChatDetailScreen(
             } catch (e: Exception) {
                 android.util.Log.e("FleetChatDetail", "Failed to resolve file attachment", e)
             }
+        }
+    }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            try {
+                var realName = getDisplayNameFromUri(context, uri)
+                if (!realName.contains(".")) realName += ".jpg"
+                val tempFile = File(context.cacheDir, realName)
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tempFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                viewModel.sendFileAttachment(tempFile, "IMAGE")
+            } catch (e: Exception) {
+                android.util.Log.e("FleetChatDetail", "Failed to resolve image attachment", e)
+            }
+        }
+    }
+
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            android.util.Log.i("FleetChatDetail", "Audio recording permission granted")
         }
     }
 
@@ -142,7 +179,12 @@ fun FleetChatDetailScreen(
         containerColor = MeetColors.backgroundDeep,
         topBar = {
             EliteTopAppBar(
-                title = partner?.userId ?: "Chat",
+                title = when (partner?.role) {
+                    "GRUPO" -> "👥 ${partner?.userId ?: "Grupo"}"
+                    "CANAL" -> "📢 ${partner?.userId ?: "Canal"}"
+                    "FLOTA" -> "🚚 ${partner?.userId ?: "Flota"}"
+                    else -> partner?.userId ?: "Chat"
+                },
                 onBackClick = onBack,
                 actions = {
                     IconButton(onClick = { viewModel.startVoiceCall() }) {
@@ -217,11 +259,120 @@ fun FleetChatDetailScreen(
                             fontSize = 11.sp
                         )
                     }
-                    Text(
-                        text = "E2EE Simulado · Sin Nube",
-                        color = MeetColors.textMuted,
-                        fontSize = 10.sp
-                    )
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFFFF5722).copy(alpha = 0.2f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5722)),
+                            modifier = Modifier.clickable {
+                                try {
+                                    val intent = android.content.Intent("android.settings.TETHER_SETTINGS").apply {
+                                        flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                                    }
+                                    context.startActivity(intent)
+                                } catch (e: Exception) {
+                                    try {
+                                        val fallback = android.content.Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS).apply {
+                                            flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                                        }
+                                        context.startActivity(fallback)
+                                    } catch (ignored: Exception) {}
+                                }
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Text("🔥", fontSize = 10.sp)
+                                Text("HOTSPOT", color = Color(0xFFFF7043), fontSize = 9.sp, fontWeight = FontWeight.Black)
+                            }
+                        }
+
+                        Text(
+                            text = "⚡ 100% P2P OFFLINE",
+                            color = Color(0xFF39FF66),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 9.5.sp
+                        )
+                    }
+                }
+            }
+
+            // ── Banner de Llamada Mesh Entrante (Alta Prioridad P2P) ──
+            incomingCallPrompt?.let { prompt ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFF071B10),
+                    border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF39FF66)),
+                    shadowElevation = 14.dp
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF39FF66).copy(alpha = 0.25f))
+                                    .border(1.5.dp, Color(0xFF39FF66), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(if (prompt.callType == "VIDEO") "📹" else "📞", fontSize = 20.sp)
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (prompt.callType == "VIDEO") "VIDEOLLAMADA MESH ENTRANTE" else "LLAMADA DE VOZ MESH ENTRANTE",
+                                    color = Color(0xFF39FF66),
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 11.sp
+                                )
+                                Text(
+                                    text = "${prompt.callerName} (${prompt.callerIp})",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Button(
+                                onClick = { viewModel.rejectIncomingCall() },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF1744)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("RECHAZAR", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
+                            Button(
+                                onClick = { viewModel.acceptIncomingCall() },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("CONTESTAR", color = Color.Black, fontWeight = FontWeight.Black)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -433,23 +584,32 @@ fun FleetChatDetailScreen(
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
                                     .padding(8.dp)
-                                    .size(width = 80.dp, height = 100.dp),
+                                    .size(width = 84.dp, height = 110.dp),
                                 shape = RoundedCornerShape(10.dp),
                                 color = Color(0xFF0E1F35),
                                 border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF39FF66))
                             ) {
                                 Box(modifier = Modifier.fillMaxSize()) {
-                                    Column(
-                                        modifier = Modifier.align(Alignment.Center),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text("🤳", fontSize = 18.sp)
-                                        Text(
-                                            text = if (call.isFrontCamera) "Frontal" else "Trasera",
-                                            color = Color.White,
-                                            fontSize = 8.sp,
-                                            fontWeight = FontWeight.Bold
+                                    if (localVideoFrame != null) {
+                                        androidx.compose.foundation.Image(
+                                            bitmap = localVideoFrame!!.asImageBitmap(),
+                                            contentDescription = "Mi Cámara",
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentScale = androidx.compose.ui.layout.ContentScale.Crop
                                         )
+                                    } else {
+                                        Column(
+                                            modifier = Modifier.align(Alignment.Center),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text("🤳", fontSize = 18.sp)
+                                            Text(
+                                                text = if (call.isFrontCamera) "Frontal" else "Trasera",
+                                                color = Color.White,
+                                                fontSize = 8.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -539,7 +699,11 @@ fun FleetChatDetailScreen(
                 contentPadding = PaddingValues(top = 12.dp, bottom = 12.dp)
             ) {
                 items(messages) { message ->
-                    val isOwn = message.senderId == viewModel.currentUserId
+                    val isOwn = message.senderId in listOf(
+                        viewModel.currentUserId,
+                        com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine.localNodeId,
+                        "local_owner"
+                    )
                     MessageBubble(
                         message = message,
                         isOwn = isOwn,
@@ -581,71 +745,73 @@ fun FleetChatDetailScreen(
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
-                    } else if (isRecording) {
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
-                                .clip(RoundedCornerShape(24.dp))
-                                .background(MeetColors.backgroundDeep)
-                                .padding(horizontal = 16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(8.dp)
-                                        .clip(CircleShape)
-                                        .background(MeetColors.error)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("Grabando nota de voz...", color = Color.White, fontSize = 12.sp)
-                            }
-                            Text(
-                                text = "Cancelar",
-                                color = MeetColors.error,
-                                fontSize = 12.sp,
-                                modifier = Modifier.clickable { viewModel.cancelRecordingVoice() }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        IconButton(
-                            onClick = { viewModel.stopAndSendVoice() },
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(MeetColors.electricBlue)
-                        ) {
-                            AnimatedNeonIcon(Icons.Default.Send, contentDescription = "Enviar Audio", tint = Color.Black)
-                        }
                     } else {
-                        IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
-                            AnimatedNeonIcon(Icons.Default.Add, contentDescription = "Adjuntar archivo", tint = MeetColors.electricBlue)
-                        }
+                        // Left / Middle Content: switches between recording banner and input field
+                        if (isRecording) {
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(48.dp)
+                                    .clip(RoundedCornerShape(24.dp))
+                                    .background(Color(0xFF250A14))
+                                    .border(1.dp, Color(0xFFFF1744), RoundedCornerShape(24.dp))
+                                    .padding(horizontal = 16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .clip(CircleShape)
+                                            .background(Color(0xFFFF1744))
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "🔴 Grabando… Suelta para enviar",
+                                        color = Color(0xFFFF1744),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Text(
+                                    text = "Cancelar",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.clickable { viewModel.cancelRecordingVoice() }
+                                )
+                            }
+                        } else {
+                            IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
+                                AnimatedNeonIcon(Icons.Default.Add, contentDescription = "Adjuntar archivo", tint = MeetColors.electricBlue)
+                            }
 
-                        OutlinedTextField(
-                            value = textInput,
-                            onValueChange = { textInput = it },
-                            placeholder = { Text("Escribe un mensaje...", color = MeetColors.textSecondary) },
-                            modifier = Modifier.weight(1f),
-                            maxLines = 4,
-                            shape = RoundedCornerShape(24.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = Color.Transparent,
-                                unfocusedBorderColor = Color.Transparent,
-                                focusedContainerColor = MeetColors.backgroundDeep,
-                                unfocusedContainerColor = MeetColors.backgroundDeep,
-                                focusedTextColor = Color.White,
-                                unfocusedTextColor = Color.White
+                            IconButton(onClick = { imagePickerLauncher.launch("image/*") }) {
+                                AnimatedNeonIcon(Icons.Default.PhotoCamera, contentDescription = "Enviar foto", tint = Color(0xFF00D9FF))
+                            }
+
+                            OutlinedTextField(
+                                value = textInput,
+                                onValueChange = { textInput = it },
+                                placeholder = { Text("Escribe un mensaje...", color = MeetColors.textSecondary) },
+                                modifier = Modifier.weight(1f),
+                                maxLines = 4,
+                                shape = RoundedCornerShape(24.dp),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = Color.Transparent,
+                                    unfocusedBorderColor = Color.Transparent,
+                                    focusedContainerColor = MeetColors.backgroundDeep,
+                                    unfocusedContainerColor = MeetColors.backgroundDeep,
+                                    focusedTextColor = Color.White,
+                                    unfocusedTextColor = Color.White
+                                )
                             )
-                        )
+                        }
 
                         Spacer(modifier = Modifier.width(8.dp))
 
-                        if (textInput.trim().isNotEmpty()) {
+                        // Action Button (Send Text OR Mic Button)
+                        if (textInput.trim().isNotEmpty() && !isRecording) {
                             IconButton(
                                 onClick = {
                                     viewModel.sendTextMessage(textInput)
@@ -659,26 +825,42 @@ fun FleetChatDetailScreen(
                                 AnimatedNeonIcon(Icons.Default.Send, contentDescription = "Enviar", tint = Color.Black)
                             }
                         } else {
-                            IconButton(
-                                onClick = {},
+                            // Mic Button: KEPT IN TREE ALWAYS so pointerInput gesture survives recomposition
+                            Box(
                                 modifier = Modifier
                                     .size(48.dp)
                                     .clip(CircleShape)
-                                    .background(MeetColors.backgroundDark)
+                                    .background(if (isRecording) Color(0xFFFF1744) else MeetColors.backgroundDark)
+                                    .border(1.dp, if (isRecording) Color(0xFFFF1744) else MeetColors.electricBlue, CircleShape)
                                     .pointerInput(Unit) {
                                         detectTapGestures(
-                                            onPress = { offset ->
-                                                viewModel.startRecordingVoice()
-                                                try {
-                                                    tryAwaitRelease()
-                                                } finally {
-                                                    viewModel.stopAndSendVoice()
+                                            onPress = {
+                                                if (androidx.core.content.ContextCompat.checkSelfPermission(
+                                                        context,
+                                                        android.Manifest.permission.RECORD_AUDIO
+                                                    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                                ) {
+                                                    viewModel.startRecordingVoice()
+                                                    val released = tryAwaitRelease()
+                                                    if (released) {
+                                                        viewModel.stopAndSendVoice()
+                                                    } else {
+                                                        viewModel.cancelRecordingVoice()
+                                                    }
+                                                } else {
+                                                    audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
                                                 }
                                             }
                                         )
-                                    }
+                                    },
+                                contentAlignment = Alignment.Center
                             ) {
-                                AnimatedNeonIcon(Icons.Default.Mic, contentDescription = "Grabar", tint = MeetColors.electricBlue)
+                                Icon(
+                                    imageVector = if (isRecording) Icons.Default.StopCircle else Icons.Default.Mic,
+                                    contentDescription = if (isRecording) "Soltar para enviar" else "Mantener para grabar",
+                                    tint = if (isRecording) Color.White else MeetColors.electricBlue,
+                                    modifier = Modifier.size(24.dp)
+                                )
                             }
                         }
                     }
@@ -772,27 +954,39 @@ fun FleetChatDetailScreen(
                     Text("Cerrar", color = MeetColors.electricBlue)
                 }
             },
-            title = { Text("Visualizador de Medios Mesh", color = Color.White) },
+            title = { Text("Fotografía Mesh P2P en Alta Resolución", color = Color.White) },
             text = {
+                val previewFile = File(path)
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(Color(0xFF09101E))
-                            .border(1.dp, Color(0xFF00F0FF), RoundedCornerShape(12.dp)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("🖼️", fontSize = 48.sp)
-                            Spacer(Modifier.height(8.dp))
-                            Text("Fotografía de Diagnóstico / Flota", color = Color.White, fontWeight = FontWeight.Bold)
-                            Text("Ruta: $path", color = MeetColors.textMuted, fontSize = 10.sp, maxLines = 1)
-                            Spacer(Modifier.height(6.dp))
-                            Text("✓ Verificado por Canal Wi-Fi Mesh", color = Color(0xFF39FF66), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                    if (previewFile.exists()) {
+                        coil.compose.AsyncImage(
+                            model = previewFile,
+                            contentDescription = "Fotografía de Diagnóstico / Flota",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(320.dp)
+                                .clip(RoundedCornerShape(12.dp)),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Fit
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(260.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF09101E))
+                                .border(1.dp, Color(0xFF00F0FF), RoundedCornerShape(12.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("🖼️", fontSize = 48.sp)
+                                Spacer(Modifier.height(8.dp))
+                                Text("Fotografía no encontrada localmente", color = Color.White, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    Text("✓ Transferido vía Socket TCP Mesh P2P", color = Color(0xFF39FF66), fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
                 }
             },
             containerColor = MeetColors.backgroundDark
@@ -839,6 +1033,7 @@ fun MessageBubble(
             Column(modifier = Modifier.padding(12.dp)) {
                 when (message.messageType) {
                     "IMAGE" -> {
+                        val imgFile = message.fileLocalPath?.let { File(it) }
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -846,32 +1041,44 @@ fun MessageBubble(
                                 .background(Color(0xFF070E1A))
                                 .clickable { message.fileLocalPath?.let { onImageClick(it) } }
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(160.dp)
-                                    .background(
-                                        Brush.verticalGradient(
-                                            listOf(Color(0xFF0A1526), Color(0xFF060B12))
+                            if (imgFile != null && imgFile.exists()) {
+                                coil.compose.AsyncImage(
+                                    model = imgFile,
+                                    contentDescription = message.messageText ?: "Fotografía Mesh",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(200.dp)
+                                        .clip(RoundedCornerShape(12.dp)),
+                                    contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(160.dp)
+                                        .background(
+                                            Brush.verticalGradient(
+                                                listOf(Color(0xFF0A1526), Color(0xFF060B12))
+                                            )
                                         )
-                                    )
-                                    .border(1.dp, Color(0xFF00F0FF).copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("📷", fontSize = 42.sp)
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = message.messageText ?: "Fotografía de Evidencia",
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp
-                                    )
-                                    Text(
-                                        text = "⚡ Canal Wi-Fi Mesh P2P · Toca para abrir",
-                                        color = Color(0xFF00F0FF),
-                                        fontSize = 10.sp
-                                    )
+                                        .border(1.dp, Color(0xFF00F0FF).copy(alpha = 0.4f), RoundedCornerShape(12.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text("📷", fontSize = 42.sp)
+                                        Spacer(Modifier.height(4.dp))
+                                        Text(
+                                            text = message.messageText ?: "Fotografía de Evidencia",
+                                            color = Color.White,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                        Text(
+                                            text = "⚡ Canal Wi-Fi Mesh P2P · Toca para abrir",
+                                            color = Color(0xFF00F0FF),
+                                            fontSize = 10.sp
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1001,15 +1208,91 @@ fun MessageBubble(
                         }
                     }
                     "FILE" -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            AnimatedNeonIcon(Icons.Default.AttachFile, contentDescription = null, tint = MeetColors.electricBlue)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = message.messageText ?: "Archivo",
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                maxLines = 2
-                            )
+                        val context = LocalContext.current
+                        val fileName = message.messageText ?: "Archivo adjunto"
+                        val fileIcon = getFileDisplayIcon(fileName)
+                        val localFile = message.fileLocalPath?.let { File(it) }
+                        val fileExists = localFile?.exists() == true
+                        val fileSizeStr = if (fileExists && localFile != null) {
+                            val bytes = localFile.length()
+                            when {
+                                bytes < 1024 -> "$bytes B"
+                                bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
+                                bytes < 1024 * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
+                                else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
+                            }
+                        } else ""
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0xFF070E1A))
+                                .border(1.dp, MeetColors.electricBlue.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
+                                .clickable {
+                                    message.fileLocalPath?.let { path ->
+                                        openFileInSystem(context, path)
+                                    }
+                                }
+                                .padding(12.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MeetColors.electricBlue.copy(alpha = 0.15f))
+                                        .border(1.dp, MeetColors.electricBlue, RoundedCornerShape(10.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(text = fileIcon, fontSize = 22.sp)
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = fileName,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp,
+                                        maxLines = 2
+                                    )
+                                    Spacer(Modifier.height(2.dp))
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        if (fileSizeStr.isNotEmpty()) {
+                                            Text(
+                                                text = fileSizeStr,
+                                                color = MeetColors.textSecondary,
+                                                fontSize = 11.sp
+                                            )
+                                            Text(text = "•", color = MeetColors.textSecondary, fontSize = 11.sp)
+                                        }
+                                        Text(
+                                            text = if (fileExists) "Guardado en Descargas 📥" else "Recibiendo…",
+                                            color = if (fileExists) Color(0xFF39FF66) else MeetColors.electricBlue,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Toca para abrir ↗",
+                                    color = MeetColors.electricBlue,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                     "CALL" -> {
@@ -1107,5 +1390,67 @@ fun MessageBubble(
                 }
             }
         }
+    }
+}
+
+fun getDisplayNameFromUri(context: Context, uri: Uri): String {
+    var displayName: String? = null
+    if (uri.scheme == "content") {
+        try {
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex != -1 && cursor.moveToFirst()) {
+                    displayName = cursor.getString(nameIndex)
+                }
+            }
+        } catch (ignored: Exception) {}
+    }
+    if (displayName.isNullOrBlank()) {
+        displayName = uri.lastPathSegment?.substringAfterLast("/")
+    }
+    return displayName?.ifBlank { null } ?: "archivo_${System.currentTimeMillis()}"
+}
+
+fun getFileDisplayIcon(fileName: String): String {
+    val ext = fileName.substringAfterLast(".").lowercase()
+    return when (ext) {
+        "iso", "bin", "img", "cso", "pbp", "nsp", "xci", "nds", "3ds", "gba", "nes", "snes", "pkg", "rom", "gcm", "wbfs" -> "🎮"
+        "apk", "aab", "xapk" -> "📲"
+        "pdf" -> "📕"
+        "doc", "docx", "odt", "rtf", "txt" -> "📝"
+        "xls", "xlsx", "csv" -> "📊"
+        "ppt", "pptx" -> "📽️"
+        "html", "htm", "xml", "json", "js", "ts", "kt", "java", "py", "css" -> "🌐"
+        "zip", "rar", "7z", "tar", "gz", "tgz" -> "📦"
+        "mp4", "mkv", "avi", "mov", "wmv", "flv" -> "🎬"
+        "mp3", "flac", "wav", "m4a", "ogg", "aac" -> "🎵"
+        else -> "📁"
+    }
+}
+
+fun openFileInSystem(context: Context, path: String) {
+    try {
+        val file = File(path)
+        if (!file.exists()) {
+            Toast.makeText(context, "El archivo aún no existe o fue movido", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val ext = file.extension.lowercase()
+        val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "*/*"
+
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        android.util.Log.e("FleetChatDetail", "Error abriendo archivo $path", e)
+        Toast.makeText(context, "No hay aplicación compatible para abrir este archivo", Toast.LENGTH_SHORT).show()
     }
 }

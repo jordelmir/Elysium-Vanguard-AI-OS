@@ -12,6 +12,8 @@ import com.elysium369.meet.data.local.dao.FleetDao
 import com.elysium369.meet.data.local.dao.VehicleDao
 import com.elysium369.meet.data.local.entities.*
 import com.elysium369.meet.data.supabase.SupabaseManager
+import com.elysium369.meet.core.mesh.ElysiumBluetoothRfcommTransport
+import com.elysium369.meet.core.mesh.ElysiumFileTransferEngine
 import com.elysium369.meet.core.mesh.ElysiumMeshGovernance
 import com.elysium369.meet.core.mesh.ElysiumPhysicalMeshEngine
 import com.elysium369.meet.core.mesh.MeshPayloadType
@@ -56,10 +58,10 @@ class FleetChatViewModel @Inject constructor(
         emitAll(fleetDao.getBusinessProfilesForOwner(currentUserId))
     }.flowOn(Dispatchers.IO)
 
-    // Fleets for the selected business
+    // Fleets for the selected business and mesh groups/channels
     val fleetsForActiveBusiness: Flow<List<FleetEntity>> = selectedBusinessId.flatMapLatest { businessId ->
-        if (businessId == null) flowOf(emptyList())
-        else fleetDao.getFleetsForBusiness(businessId)
+        val effectiveBiz = businessId ?: "mesh_p2p"
+        fleetDao.getFleetsForBusiness(effectiveBiz)
     }.flowOn(Dispatchers.IO)
 
     // Members for the selected business
@@ -141,6 +143,17 @@ class FleetChatViewModel @Inject constructor(
     val activeVideoCall: StateFlow<VideoCallSession?> = _activeVideoCall.asStateFlow()
     private var videoCallTimerJob: kotlinx.coroutines.Job? = null
 
+    // ── Incoming Call Prompt State (Banner de Aceptar/Rechazar llamada física) ──
+    data class IncomingCallPrompt(
+        val callType: String, // "AUDIO" o "VIDEO"
+        val callerId: String,
+        val callerName: String,
+        val callerIp: String
+    )
+
+    private val _incomingCallPrompt = MutableStateFlow<IncomingCallPrompt?>(null)
+    val incomingCallPrompt: StateFlow<IncomingCallPrompt?> = _incomingCallPrompt.asStateFlow()
+
     init {
         // Escuchar llamadas P2P entrantes desde el motor físico
         viewModelScope.launch {
@@ -154,29 +167,28 @@ class FleetChatViewModel @Inject constructor(
                     inviteStatus = "ACCEPTED",
                     joinedAt = System.currentTimeMillis()
                 )
-                _selectedPartner.value = dummyPartner
-
-                if (incoming.callType == "VIDEO") {
-                    _activeVideoCall.value = VideoCallSession(
-                        isActive = true,
-                        partnerId = incoming.callerId,
-                        durationSeconds = 0,
-                        route = MeshTransportLevel.WIFI_DIRECT_MESH
-                    )
-                } else {
-                    _activeVoiceCall.value = VoiceCallSession(
-                        isActive = true,
-                        partnerId = incoming.callerId,
-                        durationSeconds = 0,
-                        route = MeshTransportLevel.WIFI_DIRECT_MESH
-                    )
+                if (_selectedPartner.value == null) {
+                    _selectedPartner.value = dummyPartner
                 }
+
+                _incomingCallPrompt.value = IncomingCallPrompt(
+                    callType = incoming.callType,
+                    callerId = incoming.callerId,
+                    callerName = incoming.callerName,
+                    callerIp = incoming.callerIp
+                )
+            }
+        }
+        viewModelScope.launch {
+            ElysiumPhysicalMeshEngine.callAcceptedEvents.collect { peerId ->
+                Log.i("FleetChatVM", "Llamada confirmada y aceptada por nodo remoto: $peerId")
             }
         }
         viewModelScope.launch {
             ElysiumPhysicalMeshEngine.callTerminatedEvents.collect {
                 _activeVoiceCall.value = null
                 _activeVideoCall.value = null
+                _incomingCallPrompt.value = null
                 callTimerJob?.cancel()
                 videoCallTimerJob?.cancel()
             }
@@ -257,7 +269,8 @@ class FleetChatViewModel @Inject constructor(
      * Get recent chat conversations for the current business or all direct mesh chats
      */
     val recentChats: Flow<List<ChatMessageEntity>> = selectedBusinessId.flatMapLatest { businessId ->
-        chatDao.getAllRecentChats(currentUserId)
+        val myAliases = listOfNotNull(currentUserId, ElysiumPhysicalMeshEngine.localNodeId, "local_owner").distinct()
+        chatDao.getAllRecentChatsMultiAlias(myAliases)
     }.flowOn(Dispatchers.IO)
 
     /**
@@ -265,7 +278,15 @@ class FleetChatViewModel @Inject constructor(
      */
     val messages: Flow<List<ChatMessageEntity>> = selectedPartner.flatMapLatest { partner ->
         if (partner == null) flowOf(emptyList())
-        else chatDao.getChatHistoryAnyBusiness(currentUserId, partner.userId)
+        else {
+            val myAliases = listOfNotNull(currentUserId, ElysiumPhysicalMeshEngine.localNodeId, "local_owner").distinct()
+            val partnerAliases = listOfNotNull(
+                partner.userId,
+                partner.id,
+                findTargetMeshPeer(partner.userId)?.nodeId
+            ).distinct()
+            chatDao.getChatHistoryMultiAlias(myAliases, partnerAliases)
+        }
     }.flowOn(Dispatchers.IO)
 
     /**
@@ -436,9 +457,23 @@ class FleetChatViewModel @Inject constructor(
 
                 val peer = findTargetMeshPeer(partner.userId)
                 if (peer != null) {
-                    val ok = ElysiumPhysicalMeshEngine.sendAudioFile(peer.ipAddress, peer.port, msg, file, durationSec)
-                    if (ok) {
-                        return@launch
+                    if (peer.ipAddress.startsWith("bt:")) {
+                        val address = peer.ipAddress.removePrefix("bt:")
+                        val ok = ElysiumBluetoothRfcommTransport.sendAudioFile(
+                            targetAddress = address,
+                            senderId = currentUserId,
+                            msgId = msg.id,
+                            audioFile = file
+                        )
+                        if (ok) {
+                            chatDao.updateMessageStatus(msg.id, "DELIVERED_MESH_WIFI")
+                            return@launch
+                        }
+                    } else {
+                        val ok = ElysiumPhysicalMeshEngine.sendAudioFile(peer.ipAddress, peer.port, msg, file, durationSec)
+                        if (ok) {
+                            return@launch
+                        }
                     }
                 }
 
@@ -535,7 +570,7 @@ class FleetChatViewModel @Inject constructor(
     fun sendFileAttachment(file: File, type: String) { // "IMAGE", "PDF", etc.
         val partner = _selectedPartner.value ?: return
 
-        val isImg = type.contains("IMAGE", ignoreCase = true) || file.extension.lowercase() in listOf("jpg", "jpeg", "png", "webp")
+        val isImg = type.contains("IMAGE", ignoreCase = true) || file.extension.lowercase() in listOf("jpg", "jpeg", "png", "webp", "gif")
         val effectiveType = if (isImg) "IMAGE" else "FILE"
         val payloadType = if (isImg) MeshPayloadType.IMAGE else MeshPayloadType.TEXT
         val businessId = _selectedBusinessId.value ?: "mesh_p2p"
@@ -558,14 +593,74 @@ class FleetChatViewModel @Inject constructor(
 
             val peer = findTargetMeshPeer(partner.userId)
             if (peer != null) {
-                val ok = ElysiumPhysicalMeshEngine.sendImageFile(peer.ipAddress, peer.port, msg, file)
-                if (ok) {
-                    return@launch
+                if (peer.ipAddress.startsWith("bt:")) {
+                    // Send via Bluetooth RFCOMM
+                    val address = peer.ipAddress.removePrefix("bt:")
+                    val ok = ElysiumBluetoothRfcommTransport.sendGenericFile(
+                        targetAddress = address,
+                        senderId = currentUserId,
+                        msgId = msg.id,
+                        fileName = file.name,
+                        file = file
+                    )
+                    if (ok) {
+                        chatDao.updateMessageStatus(msg.id, "DELIVERED_MESH_WIFI")
+                        return@launch
+                    }
+                } else {
+                    // Wi-Fi TCP:
+                    // Large files (> 20MB, up to 120GB) use ElysiumFileTransferEngine chunked streaming
+                    if (file.length() > 20 * 1024 * 1024) {
+                        val fileUri = android.net.Uri.fromFile(file)
+                        ElysiumFileTransferEngine.sendFile(
+                            context = context,
+                            fileUri = fileUri,
+                            targetIp = peer.ipAddress,
+                            targetPort = 36904,
+                            peerId = peer.nodeId,
+                            peerName = peer.deviceName
+                        )
+                        chatDao.updateMessageStatus(msg.id, "SENDING_P2P")
+                        return@launch
+                    } else {
+                        // Standard files (<= 20MB) stream via main TCP port 36901
+                        val ok = ElysiumPhysicalMeshEngine.sendGenericFile(peer.ipAddress, peer.port, msg, file)
+                        if (ok) {
+                            chatDao.updateMessageStatus(msg.id, "DELIVERED_MESH_WIFI")
+                            return@launch
+                        }
+                    }
                 }
             }
 
             simulateMessageDelivery(msg.id, payloadType)
         }
+    }
+
+    /** Send any file from a URI via P2P File Transfer (never touches server) */
+    fun sendFileFromUri(context: Context, fileUri: android.net.Uri) {
+        val partner = _selectedPartner.value ?: return
+        val peer = findTargetMeshPeerSync(partner.userId)
+        if (peer != null) {
+            if (!peer.ipAddress.startsWith("bt:")) {
+                ElysiumFileTransferEngine.sendFile(
+                    context = context, fileUri = fileUri,
+                    targetIp = peer.ipAddress, targetPort = 36904,
+                    peerId = peer.nodeId, peerName = peer.deviceName
+                )
+            } else {
+                ElysiumFileTransferEngine.sendFileViaBluetooth(
+                    context = context, fileUri = fileUri,
+                    targetAddress = peer.ipAddress,
+                    peerId = peer.nodeId, peerName = peer.deviceName
+                )
+            }
+        }
+    }
+
+    private fun findTargetMeshPeerSync(partnerId: String): PhysicalMeshPeer? {
+        return ElysiumMeshGovernance.activeLinkedPeer.value
+            ?: ElysiumMeshGovernance.discoveredPhysicalPeers.value.firstOrNull()
     }
 
     /**
@@ -649,10 +744,70 @@ class FleetChatViewModel @Inject constructor(
     }
 
     /**
+     * Create a group for team / fleet communication
+     */
+    fun createGroup(name: String, description: String?, onDone: ((FleetEntity) -> Unit)? = null) {
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
+        viewModelScope.launch(Dispatchers.IO) {
+            val randomCode = "GRP-${(1000..9999).random()}"
+            val group = FleetEntity(
+                id = "grp_${UUID.randomUUID().toString().take(8)}",
+                businessId = businessId,
+                name = name,
+                description = description ?: "Grupo de Cuadrilla / Flota",
+                inviteCode = randomCode,
+                createdAt = System.currentTimeMillis()
+            )
+            fleetDao.insertFleet(group)
+            withContext(Dispatchers.Main) {
+                onDone?.invoke(group)
+            }
+        }
+    }
+
+    /**
+     * Create a broadcast channel for SOS emergency or general announcements
+     */
+    fun createChannel(name: String, description: String?, onDone: ((FleetEntity) -> Unit)? = null) {
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
+        viewModelScope.launch(Dispatchers.IO) {
+            val randomCode = "CHN-${(1000..9999).random()}"
+            val channel = FleetEntity(
+                id = "chn_${UUID.randomUUID().toString().take(8)}",
+                businessId = businessId,
+                name = name,
+                description = description ?: "Canal de Difusión / Alertas",
+                inviteCode = randomCode,
+                createdAt = System.currentTimeMillis()
+            )
+            fleetDao.insertFleet(channel)
+            withContext(Dispatchers.Main) {
+                onDone?.invoke(channel)
+            }
+        }
+    }
+
+    /**
+     * Iniciar chat directo con un contacto o nodo específico
+     */
+    fun startDirectChat(userId: String, displayName: String) {
+        val member = FleetMemberEntity(
+            id = userId,
+            businessId = _selectedBusinessId.value ?: "mesh_p2p",
+            userId = userId,
+            role = "CONTACTO",
+            email = "${userId.lowercase().replace(" ", "_")}@mesh.direct",
+            inviteStatus = "ACCEPTED",
+            joinedAt = System.currentTimeMillis()
+        )
+        selectPartner(member)
+    }
+
+    /**
      * Create a fleet with an invite code
      */
     fun createFleet(name: String, description: String?) {
-        val businessId = _selectedBusinessId.value ?: return
+        val businessId = _selectedBusinessId.value ?: "mesh_p2p"
         viewModelScope.launch(Dispatchers.IO) {
             val randomCode = "EVG-FLT-${(1000..9999).random()}"
             val fleet = FleetEntity(
@@ -903,10 +1058,71 @@ class FleetChatViewModel @Inject constructor(
         }
     }
 
+    fun acceptIncomingCall() {
+        val prompt = _incomingCallPrompt.value ?: return
+        _incomingCallPrompt.value = null
+
+        if (prompt.callType == "VIDEO") {
+            _activeVideoCall.value = VideoCallSession(
+                isActive = true,
+                partnerId = prompt.callerId,
+                durationSeconds = 0,
+                route = MeshTransportLevel.WIFI_DIRECT_MESH
+            )
+            viewModelScope.launch(Dispatchers.IO) {
+                ElysiumPhysicalMeshEngine.sendCallSignal(prompt.callerIp, ElysiumPhysicalMeshEngine.TCP_DATA_PORT, "ACCEPT", prompt.callerId)
+                ElysiumPhysicalMeshEngine.startAudioCallStreaming(prompt.callerIp)
+                ElysiumPhysicalMeshEngine.startVideoCallStreaming(prompt.callerIp)
+            }
+            videoCallTimerJob?.cancel()
+            videoCallTimerJob = viewModelScope.launch(Dispatchers.Default) {
+                while (coroutineContext[kotlinx.coroutines.Job]?.isActive == true && _activeVideoCall.value?.isActive == true) {
+                    kotlinx.coroutines.delay(1000)
+                    _activeVideoCall.update { current ->
+                        current?.copy(durationSeconds = current.durationSeconds + 1)
+                    }
+                }
+            }
+        } else {
+            _activeVoiceCall.value = VoiceCallSession(
+                isActive = true,
+                partnerId = prompt.callerId,
+                durationSeconds = 0,
+                route = MeshTransportLevel.WIFI_DIRECT_MESH
+            )
+            viewModelScope.launch(Dispatchers.IO) {
+                ElysiumPhysicalMeshEngine.sendCallSignal(prompt.callerIp, ElysiumPhysicalMeshEngine.TCP_DATA_PORT, "ACCEPT", prompt.callerId)
+                ElysiumPhysicalMeshEngine.startAudioCallStreaming(prompt.callerIp)
+            }
+            callTimerJob?.cancel()
+            callTimerJob = viewModelScope.launch(Dispatchers.Default) {
+                while (coroutineContext[kotlinx.coroutines.Job]?.isActive == true && _activeVoiceCall.value?.isActive == true) {
+                    kotlinx.coroutines.delay(1000)
+                    _activeVoiceCall.update { current ->
+                        current?.copy(durationSeconds = current.durationSeconds + 1)
+                    }
+                }
+            }
+        }
+    }
+
+    fun rejectIncomingCall() {
+        val prompt = _incomingCallPrompt.value ?: return
+        _incomingCallPrompt.value = null
+        viewModelScope.launch(Dispatchers.IO) {
+            ElysiumPhysicalMeshEngine.sendCallSignal(prompt.callerIp, ElysiumPhysicalMeshEngine.TCP_DATA_PORT, "REJECT", prompt.callerId)
+        }
+    }
+
+    fun sendImageAttachment(file: File) {
+        sendFileAttachment(file, "IMAGE")
+    }
+
     fun flipVideoCallCamera() {
         _activeVideoCall.update { current ->
             current?.copy(isFrontCamera = !current.isFrontCamera)
         }
+        ElysiumPhysicalMeshEngine.flipVideoCallCamera()
     }
 
     fun endVideoCall() {

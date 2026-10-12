@@ -61,6 +61,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -278,35 +279,40 @@ fun RideInRideChatSheet(
                 items(chatMessages) { message ->
                     val isMe = message.senderId == myId || message.senderRole.equals(myRole, ignoreCase = true)
                     val alignment = if (isMe) Alignment.End else Alignment.Start
-                    val bubbleColor = if (isMe) MeetColors.electricBlue.copy(alpha = 0.22f) else Color(0xFF132032)
-                    val borderColor = if (isMe) MeetColors.electricBlue.copy(alpha = 0.6f) else MeetColors.borderSubtle
+
+                    val bubbleBrush = if (isMe) {
+                        Brush.linearGradient(listOf(Color(0xFF003D5B), Color(0xFF0D253F)))
+                    } else {
+                        Brush.linearGradient(listOf(Color(0xFF0B1728), Color(0xFF07101C)))
+                    }
+                    val borderColor = if (isMe) Color(0xFF00E5FF).copy(alpha = 0.6f) else Color(0xFF162A45)
 
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 2.dp),
+                            .padding(vertical = 3.dp),
                         horizontalAlignment = alignment
                     ) {
                         Box(
                             modifier = Modifier
-                                .widthIn(max = 280.dp)
+                                .widthIn(max = 285.dp)
                                 .clip(
                                     RoundedCornerShape(
-                                        topStart = 14.dp,
-                                        topEnd = 14.dp,
-                                        bottomStart = if (isMe) 14.dp else 2.dp,
-                                        bottomEnd = if (isMe) 2.dp else 14.dp
+                                        topStart = 16.dp,
+                                        topEnd = 16.dp,
+                                        bottomStart = if (isMe) 16.dp else 3.dp,
+                                        bottomEnd = if (isMe) 3.dp else 16.dp
                                     )
                                 )
-                                .background(bubbleColor)
+                                .background(bubbleBrush)
                                 .border(
                                     width = 1.dp,
                                     color = borderColor,
                                     shape = RoundedCornerShape(
-                                        topStart = 14.dp,
-                                        topEnd = 14.dp,
-                                        bottomStart = if (isMe) 14.dp else 2.dp,
-                                        bottomEnd = if (isMe) 2.dp else 14.dp
+                                        topStart = 16.dp,
+                                        topEnd = 16.dp,
+                                        bottomStart = if (isMe) 16.dp else 3.dp,
+                                        bottomEnd = if (isMe) 3.dp else 16.dp
                                     )
                                 )
                                 .padding(12.dp)
@@ -317,7 +323,7 @@ fun RideInRideChatSheet(
                                         text = message.senderName.takeIf { it.isNotBlank() } ?: if (message.senderRole == "DRIVER") "Chofer" else "Pasajero",
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 11.sp,
-                                        color = MeetColors.cyberCyan
+                                        color = Color(0xFF00D9FF)
                                     )
                                     Spacer(modifier = Modifier.height(4.dp))
                                 }
@@ -327,7 +333,8 @@ fun RideInRideChatSheet(
                                         Text(
                                             text = message.textContent ?: "",
                                             color = Color.White,
-                                            fontSize = 14.sp
+                                            fontSize = 14.sp,
+                                            lineHeight = 19.sp
                                         )
                                     }
                                     "AUDIO" -> {
@@ -338,36 +345,54 @@ fun RideInRideChatSheet(
                                                 .clickable {
                                                     message.audioFilePath?.let { onPlayAudio(it) }
                                                 }
-                                                .padding(vertical = 4.dp)
+                                                .padding(vertical = 4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
                                             Box(
                                                 modifier = Modifier
-                                                    .size(36.dp)
+                                                    .size(38.dp)
                                                     .clip(CircleShape)
-                                                    .background(MeetColors.neonGreen.copy(alpha = 0.2f)),
+                                                    .background(
+                                                        Brush.linearGradient(
+                                                            listOf(Color(0xFF00E5FF), Color(0xFF39FF66))
+                                                        )
+                                                    ),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Icon(
                                                     imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                                                     contentDescription = if (isPlaying) "Pausar" else "Reproducir",
-                                                    tint = MeetColors.neonGreen,
+                                                    tint = Color.Black,
                                                     modifier = Modifier.size(20.dp)
                                                 )
                                             }
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Column {
-                                                Text(
-                                                    text = "Nota de voz",
-                                                    color = Color.White,
-                                                    fontWeight = FontWeight.SemiBold,
-                                                    fontSize = 13.sp
-                                                )
-                                                Text(
-                                                    text = "${((message.audioDurationMs ?: 0L) / 1000).coerceAtLeast(1)}s",
-                                                    color = MeetColors.textSecondary,
-                                                    fontSize = 11.sp
-                                                )
+
+                                            // Waveform bars simulation
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(2.5.dp),
+                                                modifier = Modifier.weight(1f)
+                                            ) {
+                                                val barHeights = listOf(8, 14, 22, 12, 18, 24, 16, 20, 10, 15, 8)
+                                                barHeights.forEachIndexed { idx, h ->
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .width(3.dp)
+                                                            .height(h.dp)
+                                                            .clip(RoundedCornerShape(2.dp))
+                                                            .background(
+                                                                if (isPlaying && idx % 2 == 0) Color(0xFF39FF66) else Color(0xFF00E5FF).copy(alpha = 0.6f)
+                                                            )
+                                                    )
+                                                }
                                             }
+
+                                            Text(
+                                                text = "${((message.audioDurationMs ?: 0L) / 1000).coerceAtLeast(1)}s",
+                                                color = Color(0xFF39FF66),
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
                                         }
                                     }
                                     "IMAGE" -> {
@@ -379,7 +404,8 @@ fun RideInRideChatSheet(
                                                 modifier = Modifier
                                                     .widthIn(max = 240.dp)
                                                     .heightIn(min = 120.dp, max = 220.dp)
-                                                    .clip(RoundedCornerShape(10.dp))
+                                                    .clip(RoundedCornerShape(12.dp))
+                                                    .border(1.dp, Color(0xFF00E5FF).copy(alpha = 0.5f), RoundedCornerShape(12.dp))
                                             )
                                         } else {
                                             Text(
@@ -436,6 +462,37 @@ fun RideInRideChatSheet(
                         border = BorderStroke(1.dp, MeetColors.cyberCyan.copy(alpha = 0.4f)),
                         shape = RoundedCornerShape(16.dp),
                     )
+                }
+            }
+
+            // Pulsating Audio Recording Strip
+            if (isRecordingAudio) {
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Color(0xFF28070D),
+                    border = BorderStroke(1.2.dp, Color(0xFFFF1744))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFFFF1744))
+                        )
+                        Text(
+                            text = "🎙️ Grabando nota de voz en vivo... (Toca el micrófono para enviar)",
+                            color = Color(0xFFFF8A80),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
             }
 
