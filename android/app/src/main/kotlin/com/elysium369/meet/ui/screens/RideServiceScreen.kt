@@ -843,75 +843,113 @@ private fun DriverWalletCard(
     onRecharge: () -> Unit,
 ) {
     val commission = policy?.commissionBasisPoints?.toDouble()?.div(100)
+    val availableMinor = balance?.availableMinor ?: 0L
+    val canRequestLoan = availableMinor <= 400L
+    val walletState = remember(availableMinor) {
+        runCatching { com.elysium369.meet.core.wallet.SpecialistWalletStore }
+    }
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF07131E)),
-        border = BorderStroke(1.dp, MeetColors.cyberCyan.copy(alpha = 0.65f)),
-        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF040C18)),
+        border = BorderStroke(
+            1.dp,
+            Brush.linearGradient(listOf(MeetColors.cyberCyan, Color(0xFF7B2FFF), MeetColors.neonGreen))
+        ),
+        shape = RoundedCornerShape(18.dp),
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("BILLETERA DEL CHOFER", color = MeetColors.cyberCyan, fontWeight = FontWeight.Black)
-            Text(
-                "Saldo promocional inicial: ₡3,000",
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                "Saldo disponible: ${balance?.availableMinor?.let { CoreMoney.ofCrc(it).formatted() } ?: "Consultando Supabase…"}",
-                color = MeetColors.neonGreen,
-                fontWeight = FontWeight.Bold,
-            )
-            balance?.let {
-                Text(
-                    "Reservado para viajes: ${CoreMoney.ofCrc(it.reservedMinor).formatted()} · Comisión según política vigente",
-                    color = MeetColors.textSecondary,
-                    fontSize = 11.sp,
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    commission?.let { "Comisión por viaje: ${"%.2f".format(java.util.Locale.US, it)}%" }
-                        ?: "Comisión por viaje: política no disponible",
-                    color = MeetColors.textSecondary,
-                    fontSize = 12.sp,
-                )
-            }
-
-            // ── LÍNEA DE PRÉSTAMO OPERATIVO ──
-            Surface(
-                color = Color(0xFF0A1929),
-                shape = RoundedCornerShape(12.dp),
-                border = BorderStroke(1.dp, MeetColors.neonGreen.copy(alpha = 0.5f)),
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // ── HEADER ──
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("⚡", fontSize = 14.sp)
-                        Text("LÍNEA DE PRÉSTAMO OPERATIVO", color = Color.White, fontWeight = FontWeight.Black, fontSize = 11.sp)
-                    }
+                Text("⚡", fontSize = 18.sp)
+                Column(Modifier.weight(1f)) {
+                    Text("BILLETERA OPERATIVA", color = MeetColors.cyberCyan, fontWeight = FontWeight.Black, fontSize = 13.sp, letterSpacing = 1.5.sp)
+                    Text("Elysium Vanguard AI OS", color = Color(0xFF7B2FFF), fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                }
+                Surface(
+                    color = if (canRequestLoan) MeetColors.neonGreen.copy(alpha = 0.15f) else Color(0xFF1A2A3A),
+                    shape = RoundedCornerShape(6.dp),
+                    border = BorderStroke(1.dp, if (canRequestLoan) MeetColors.neonGreen else MeetColors.borderSubtle)
+                ) {
                     Text(
-                        "Préstamos de ₡3,000 CRC por solicitud · Disponible cuando saldo ≤ ₡400",
-                        color = MeetColors.cyberCyan,
-                        fontSize = 10.sp,
-                    )
-                    Text(
-                        "🛡️ Puedes pedir prestado todo lo que necesites (sin límite de deuda). Cada solicitud te otorga ₡3,000 CRC. Al activarse la cuenta bancaria empresarial oficial de Elysium, deberás liquidar la deuda acumulada para continuar operando, o tu cuenta entrará en pausa temporal.",
-                        color = MeetColors.textMuted,
-                        fontSize = 9.sp,
-                        lineHeight = 12.sp,
+                        if (canRequestLoan) "CRÉDITO DISPONIBLE" else "SALDO OK",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        color = if (canRequestLoan) MeetColors.neonGreen else MeetColors.textSecondary,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 0.5.sp
                     )
                 }
             }
 
+            // ── SALDO PANEL ──
+            Surface(
+                color = Color(0xFF071527),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column {
+                        Text("SALDO DISPONIBLE", color = MeetColors.textSecondary, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                        Text(
+                            balance?.availableMinor?.let { CoreMoney.ofCrc(it).formatted() } ?: "···",
+                            color = if (canRequestLoan) MeetColors.warning else MeetColors.neonGreen,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 22.sp,
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text("RESERVADO", color = MeetColors.textSecondary, fontSize = 9.sp, letterSpacing = 0.5.sp)
+                        Text(
+                            balance?.reservedMinor?.let { CoreMoney.ofCrc(it).formatted() } ?: "₡0",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp,
+                        )
+                        commission?.let {
+                            Text("Comisión: ${"%.1f".format(java.util.Locale.US, it)}%", color = MeetColors.textMuted, fontSize = 9.sp)
+                        }
+                    }
+                }
+            }
+
+            // ── BOTÓN DE CRÉDITO (UN SOLO CLICK) ──
             Button(
                 onClick = onRecharge,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MeetColors.neonGreen, contentColor = Color.Black),
-            ) { Text("GESTIÓN DE SALDO Y PRÉSTAMOS OPERATIVOS", fontWeight = FontWeight.Black, fontSize = 10.sp) }
+                enabled = canRequestLoan,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (canRequestLoan) MeetColors.neonGreen else Color(0xFF1A2A3A),
+                    contentColor = if (canRequestLoan) Color.Black else MeetColors.textMuted,
+                    disabledContainerColor = Color(0xFF1A2A3A),
+                    disabledContentColor = MeetColors.textMuted,
+                ),
+                shape = RoundedCornerShape(12.dp),
+            ) {
+                Text(
+                    if (canRequestLoan) "⚡ SOLICITAR CRÉDITO ₡3,000" else "✓ SALDO SUFICIENTE (> ₡400)",
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp,
+                    letterSpacing = 0.5.sp,
+                )
+            }
+
+            // ── REGLAS COMPACTAS ──
+            Text(
+                "Crédito fijo: ₡3,000 por solicitud · Disponible cuando saldo ≤ ₡400 · Sin límite de deuda · Liquidación al activar cuenta empresarial",
+                color = MeetColors.textMuted,
+                fontSize = 8.sp,
+                lineHeight = 11.sp,
+            )
+
+            // ── HISTORIAL ──
             topups.take(3).forEach { topup ->
                 val status = when (topup.status) {
-                    "PENDING_REVIEW" -> "PENDIENTE DE REVISIÓN"
-                    "APPROVED" -> "ACREDITADA"
-                    "REJECTED" -> "RECHAZADA"
+                    "PENDING_REVIEW" -> "⏳ PENDIENTE"
+                    "APPROVED" -> "✓ ACREDITADA"
+                    "REJECTED" -> "✗ RECHAZADA"
                     else -> topup.status
                 }
                 Text(
@@ -921,11 +959,11 @@ private fun DriverWalletCard(
                         "REJECTED" -> MeetColors.error
                         else -> MeetColors.warning
                     },
-                    fontSize = 11.sp,
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                 )
             }
-            message?.let { Text(it, color = MeetColors.warning, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+            message?.let { Text(it, color = MeetColors.warning, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
         }
     }
 }
@@ -3712,7 +3750,31 @@ fun DriverDashboard(
                 balance = walletBalance,
                 topups = walletTopups,
                 message = walletMessage,
-                onRecharge = { showTopupDialog = true },
+                onRecharge = {
+                    walletScope.launch {
+                        walletMessage = null
+                        runCatching {
+                            val specialistId = driverHomeOwner ?: error("Sesión no válida")
+                            com.elysium369.meet.core.wallet.SpecialistWalletStore.requestOperativeAdvance(
+                                context = context,
+                                specialistId = specialistId,
+                                serviceVertical = "RIDES",
+                            )
+                        }.onSuccess { topup ->
+                            walletMessage = "✓ Crédito de ₡3,000 acreditado. Ref: ${topup.referenceNumber}"
+                            runCatching { PlatformTrustCenterGateway.walletBalance() }
+                                .onSuccess { walletBalance = it }
+                        }.onFailure { e ->
+                            val msg = e.message ?: "Error desconocido"
+                            walletMessage = when {
+                                "BALANCE_ABOVE_THRESHOLD" in msg -> "Tu saldo es mayor a ₡400. El crédito solo está disponible cuando tu saldo sea ≤ ₡400."
+                                "AUTH_REQUIRED" in msg -> "Sesión no válida. Reinicia la app."
+                                "OPERATIVE_SUSPENDED" in msg -> "Cuenta suspendida. Liquida tu deuda para continuar."
+                                else -> "No se pudo procesar: ${msg.take(100)}"
+                            }
+                        }
+                    }
+                },
             )
         }
         item {

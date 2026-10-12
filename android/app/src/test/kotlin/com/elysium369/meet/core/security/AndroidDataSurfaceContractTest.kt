@@ -44,6 +44,8 @@ class AndroidDataSurfaceContractTest {
             """name="telemetry_exports" path="TelemetryExports/"""",
             """name="gauge_qr_shares" path="gauge_qr_shares/"""",
             """name="verification_captures" path="meet_verifications/"""",
+            """name="mesh_transfers" path="Download/"""",
+            """name="all_cache" path="mesh_share_cache/"""",
         )
 
         allowed.forEach { expected -> assertTrue(paths.contains(expected)) }

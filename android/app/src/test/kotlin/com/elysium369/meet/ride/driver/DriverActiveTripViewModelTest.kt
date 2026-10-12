@@ -38,6 +38,7 @@ import org.junit.Test
 class DriverActiveTripViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
+    private val mainDispatcher = kotlinx.coroutines.test.UnconfinedTestDispatcher()
     private val fakeDao = TestFakeRideDao()
     private val fakeBus = TestFakeRideCommandBus()
     private val fakeRouting = TestFakeRoutingProvider()
@@ -47,7 +48,7 @@ class DriverActiveTripViewModelTest {
 
     @Before
     fun setUp() {
-        Dispatchers.setMain(testDispatcher)
+        Dispatchers.setMain(mainDispatcher)
         viewModel = DriverActiveTripViewModel(
             rideDao = fakeDao,
             commandBus = fakeBus,

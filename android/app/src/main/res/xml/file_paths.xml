@@ -8,7 +8,6 @@
     <cache-path name="safety_evidence" path="safety_evidence/" />
     <cache-path name="nexus_profile_shares" path="shares/" />
     <cache-path name="dragoncalc_exports" path="DragonCalcExports/" />
-    <external-path name="external_storage" path="." />
-    <cache-path name="all_cache" path="." />
-    <files-path name="all_files" path="." />
+    <external-files-path name="mesh_transfers" path="Download/" />
+    <cache-path name="all_cache" path="mesh_share_cache/" />
 </paths>

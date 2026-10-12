@@ -286,7 +286,7 @@ object SpecialistWalletStore {
 
         val advanceId = "ADV-" + UUID.randomUUID().toString().take(8).uppercase()
         val newDebt = current.accumulatedAdvanceDebtCrc + actualAdvance
-        val newBalance = current.balanceCrc + actualAdvance
+        val advanceProjectedBalance = current.balanceCrc + actualAdvance
 
         val topup = SpecialistTopup(
             id = advanceId,
@@ -301,9 +301,9 @@ object SpecialistWalletStore {
         )
 
         val updatedState = current.copy(
-            balanceCrc = newBalance,
+            balanceCrc = advanceProjectedBalance,
             accumulatedAdvanceDebtCrc = newDebt,
-            isOperativeLockedDueToDebt = current.isEnterpriseSettlementMandatory && newDebt > 0L && newBalance <= MIN_OPERATIVE_BALANCE_THRESHOLD_CRC,
+            isOperativeLockedDueToDebt = current.isEnterpriseSettlementMandatory && newDebt > 0L && advanceProjectedBalance <= MIN_OPERATIVE_BALANCE_THRESHOLD_CRC,
             topups = listOf(topup) + current.topups.filterNot { it.id == advanceId }
         )
 
