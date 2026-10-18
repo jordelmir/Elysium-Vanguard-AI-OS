@@ -205,6 +205,7 @@ class MainActivity : ComponentActivity() {
         }
 
         checkPermissions()
+        com.elysium369.meet.core.notification.ElysiumNotificationHub.init(this)
         MeetColors.initialize(this)
         com.elysium369.meet.ui.elysium.theme.ElysiumThemeRepository.initialize(this)
 

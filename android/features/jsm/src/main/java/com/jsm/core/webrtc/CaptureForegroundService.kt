@@ -79,10 +79,11 @@ class CaptureForegroundService : Service() {
 
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Elysium ScreenMirror")
-            .setContentText("Compartiendo la pantalla con un equipo autorizado")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("📺 Elysium ScreenMirror Activo")
+            .setContentText("Transmitiendo pantalla a un equipo autorizado en tu red local.")
+            .setSmallIcon(R.drawable.ic_elysium_notification)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .build()
     }

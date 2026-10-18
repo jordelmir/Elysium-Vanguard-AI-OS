@@ -115,13 +115,30 @@ object ElysiumPhysicalMeshEngine {
 
     /** Public API for BluetoothRfcommTransport to push received messages */
     fun emitReceivedMessage(msg: ChatMessageEntity) {
-        engineScope.launch { _messageReceivedEvents.emit(msg) }
+        engineScope.launch {
+            _messageReceivedEvents.emit(msg)
+            // ── Notification: mensaje recibido via Bluetooth ──
+            appContext?.let { ctx ->
+                val senderName = discoveredPeersMap[msg.senderId]?.deviceName ?: msg.senderId
+                val content = msg.messageText ?: if (msg.messageType == "AUDIO") "Nota de voz recibida" else "Archivo recibido"
+                com.elysium369.meet.core.notification.ElysiumNotificationHub.showMeshMessagePopUp(
+                    ctx, senderName, content
+                )
+            }
+        }
     }
 
     /** Public API for BluetoothRfcommTransport to push incoming call signals */
     fun emitIncomingCall(callType: String, callerId: String, callerName: String, callerIp: String) {
         engineScope.launch {
             _incomingCallEvents.emit(IncomingCallSignal(callType, callerId, callerName, callerIp))
+            // ── Notification: llamada entrante via Bluetooth ──
+            appContext?.let { ctx ->
+                val typeLabel = if (callType == "VIDEO") "Video" else "Voz"
+                com.elysium369.meet.core.notification.ElysiumNotificationHub.showIncomingCallPopUp(
+                    ctx, callerName, typeLabel
+                )
+            }
         }
     }
 
@@ -164,6 +181,7 @@ object ElysiumPhysicalMeshEngine {
         }
 
         _isEngineRunning.value = true
+        com.elysium369.meet.core.notification.ElysiumNotificationHub.showMeshRadarActiveNotification(ctx, 0)
 
         // 3. Iniciar listeners de red en background
         startUdpBeaconListener()
@@ -306,8 +324,17 @@ object ElysiumPhysicalMeshEngine {
                 isLinked = isLinked
             )
 
+            val isNew = (existing == null)
             discoveredPeersMap[peerNodeId] = updatedPeer
             publishPeers()
+
+            if (isNew) {
+                appContext?.let { ctx ->
+                    com.elysium369.meet.core.notification.ElysiumNotificationHub.showMeshPeerConnectedPopUp(
+                        ctx, peerName, effectiveIp
+                    )
+                }
+            }
         }
     }
 
@@ -432,6 +459,11 @@ object ElysiumPhysicalMeshEngine {
                     database?.chatDao()?.insertMessage(entity)
                     _messageReceivedEvents.emit(entity)
                     ElysiumMeshGovernance.recordPayloadSent(MeshPayloadType.TEXT)
+                    ctx?.let { c ->
+                        com.elysium369.meet.core.notification.ElysiumNotificationHub.showMeshMessagePopUp(
+                            c, senderName, messageText
+                        )
+                    }
 
                     // Responder confirmación
                     dos.writeUTF("ACK|$msgId")
@@ -534,19 +566,35 @@ object ElysiumPhysicalMeshEngine {
                     when (signal) {
                         "RING_AUDIO" -> {
                             _incomingCallEvents.emit(IncomingCallSignal("AUDIO", senderId, senderName, clientIp))
+                            appContext?.let { ctx ->
+                                com.elysium369.meet.core.notification.ElysiumNotificationHub.showIncomingCallPopUp(
+                                    ctx, senderName, "Voz"
+                                )
+                            }
                         }
                         "RING_VIDEO" -> {
                             _incomingCallEvents.emit(IncomingCallSignal("VIDEO", senderId, senderName, clientIp))
+                            appContext?.let { ctx ->
+                                com.elysium369.meet.core.notification.ElysiumNotificationHub.showIncomingCallPopUp(
+                                    ctx, senderName, "Video"
+                                )
+                            }
                         }
                         "ACCEPT" -> {
                             startAudioCallStreaming(clientIp)
                             startVideoCallStreaming(clientIp)
                             _callAcceptedEvents.emit(senderId)
+                            appContext?.let { ctx ->
+                                com.elysium369.meet.core.notification.ElysiumNotificationHub.dismissIncomingCallNotification(ctx, senderName)
+                            }
                         }
                         "END", "REJECT" -> {
                             stopAudioCallStreaming()
                             stopVideoCallStreaming()
                             _callTerminatedEvents.emit(senderId)
+                            appContext?.let { ctx ->
+                                com.elysium369.meet.core.notification.ElysiumNotificationHub.dismissIncomingCallNotification(ctx, senderName)
+                            }
                         }
                     }
                     dos.writeUTF("ACK_SIGNAL")

@@ -1077,6 +1077,9 @@ class ObdViewModel @Inject constructor(
 
                 // Start background upload loop for telemetry
                 startLiveLinkTelemetryLoop(coreSession.sessionId)
+                com.elysium369.meet.core.notification.ElysiumNotificationHub.showLiveLinkActiveNotification(
+                    context, coreSession.sessionId, if (readOnly) "Solo Lectura" else "Asistido"
+                )
 
                 // Start background note polling loop
                 startNotesPollingLoop(coreSession.sessionId)
@@ -1747,6 +1750,16 @@ class ObdViewModel @Inject constructor(
             try {
                 marketplaceDao.upsertBidRespectingRequestClaim(bid)
                 SupabaseManager.client.postgrest["service_bids"].insert(bid)
+                // ── Notification: avisarle al USUARIO que le llegó una cotización ──
+                withContext(Dispatchers.Main) {
+                    com.elysium369.meet.core.notification.ElysiumNotificationHub.showServiceBidReceivedPopUp(
+                        context = context,
+                        requestId = requestId,
+                        shopName = resolvedProviderName,
+                        price = price,
+                        estimatedHours = estimatedHours
+                    )
+                }
             } catch (e: Exception) {
                 Log.e("ObdViewModel", "Failed to place bid", e)
             }
@@ -1788,6 +1801,17 @@ class ObdViewModel @Inject constructor(
                     return@launch
                 }
                 scheduleVanguardCommerceSync()
+
+                // ── Notification: avisarle al USUARIO que su servicio fue aceptado ──
+                val assignedBid = marketplaceDao.getBidById(bidId)
+                val mechanicName = assignedBid?.shopName ?: "Un mecánico"
+                withContext(Dispatchers.Main) {
+                    com.elysium369.meet.core.notification.ElysiumNotificationHub.showServiceAcceptedPopUp(
+                        context = this@ObdViewModel.context,
+                        requestId = requestId,
+                        mechanicName = mechanicName
+                    )
+                }
 
                 runCatching {
                     val request = marketplaceDao.getRequestById(requestId)
@@ -1893,6 +1917,15 @@ class ObdViewModel @Inject constructor(
                 scheduleVanguardCommerceSync()
                 // V2 spec Phase 7: completion must trigger a Post-Scan prompt.
                 com.elysium369.meet.core.reports.PostScanPrompt.request(requestId)
+                // ── Notification: avisarle al USUARIO que su servicio fue completado ──
+                val completedReq = marketplaceDao.getRequestById(requestId)
+                withContext(Dispatchers.Main) {
+                    com.elysium369.meet.core.notification.ElysiumNotificationHub.showServiceCompletedPopUp(
+                        context = this@ObdViewModel.context,
+                        requestId = requestId,
+                        mechanicName = completedReq?.assignedMechanicName
+                    )
+                }
                 // ─── Direct Supabase sync ───
                 runCatching {
                     SupabaseManager.client.postgrest["service_requests"].update(
@@ -1907,6 +1940,13 @@ class ObdViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             if (marketplaceDao.refundServiceAfterPaymentFailure(requestId)) {
                 scheduleVanguardCommerceSync()
+                // ── Notification: avisarle al USUARIO que su servicio fue cancelado ──
+                withContext(Dispatchers.Main) {
+                    com.elysium369.meet.core.notification.ElysiumNotificationHub.showServiceCancelledPopUp(
+                        context = this@ObdViewModel.context,
+                        requestId = requestId
+                    )
+                }
                 // ─── Direct Supabase sync ───
                 runCatching {
                     SupabaseManager.client.postgrest["service_requests"].update(
@@ -4452,7 +4492,11 @@ class ObdViewModel @Inject constructor(
                         when (state) {
                             ObdState.CONNECTING -> voiceFeedbackManager.speak("Iniciando enlace con el adaptador OBD", "Initiating link with OBD adapter")
                             ObdState.NEGOTIATING -> voiceFeedbackManager.speak("Estableciendo protocolo de comunicación", "Establishing communication protocol")
-                            ObdState.CONNECTED -> voiceFeedbackManager.speak("Conexión establecida. Sistema de telemetría Elysium Vanguard AI OS activo.", "Connection established. Elysium Vanguard AI OS telemetry system active.")
+                            ObdState.CONNECTED -> {
+                                voiceFeedbackManager.speak("Conexión establecida. Sistema de telemetría Elysium Vanguard AI OS activo.", "Connection established. Elysium Vanguard AI OS telemetry system active.")
+                                com.elysium369.meet.core.notification.ElysiumNotificationHub.showObdConnectedPopUp(context, "Adaptador OBD2")
+                                startForegroundService(_selectedVehicle.value?.id ?: "active_vehicle", lastAdapterAddress)
+                            }
                             ObdState.ERROR -> voiceFeedbackManager.speak("Error de conexión. Por favor, verifique el adaptador.", "Connection error. Please check the adapter.")
                             else -> {}
                         }
@@ -5648,6 +5692,7 @@ class ObdViewModel @Inject constructor(
                 voiceFeedbackManager.speak("Escaneo completado. Se detectaron $total códigos de error en el sistema.", "Scan complete. $total fault codes detected in the system.")
             }
             updateHealthScore()
+            com.elysium369.meet.core.notification.ElysiumNotificationHub.showScanCompletedPopUp(context, total)
             addTerminalLog(
                 "──── ESCANEO ${professionalReport.completeness.name} — $total códigos en total ────",
                 if (professionalReport.completeness == com.elysium369.meet.core.obd.ScanCompleteness.COMPLETE) {
@@ -9244,14 +9289,43 @@ class ObdViewModel @Inject constructor(
                     ) return@collect
                     if (latest == null) return@collect
                     if (latest.status == "CANCELLED" || latest.serverState == "CANCELLED") {
+                        // ── Notification: viaje cancelado ──
+                        val isDriver = _rideDriverMode.value
+                        com.elysium369.meet.core.notification.ElysiumNotificationHub.processRideStateChange(
+                            context = context,
+                            requestId = latest.requestId,
+                            effectiveState = "CANCELLED",
+                            isDriver = isDriver,
+                            partyName = if (isDriver) latest.passengerName else latest.assignedDriverName,
+                            price = latest.finalPrice ?: latest.priceOffer,
+                            pickupAddress = latest.pickupAddress,
+                            destAddress = latest.destAddress,
+                            currency = latest.currency
+                        )
                         rideDao.clearActiveRideSelectionsForRide(request.requestId)
                         applyActiveRide(null)
                     } else {
                         // Room contains command acknowledgements as well as realtime refreshes.
                         // Keep completion visible for receipt and feedback; never freeze a version.
                         _activeRideRequest.value = latest
-                        val role = if (_rideDriverMode.value) "DRIVER" else "PASSENGER"
-                        val rating = if (_rideDriverMode.value) latest.driverRating else latest.passengerRating
+
+                        // ── Notification: disparar pop-up en cada cambio de estado ──
+                        val effectiveState = latest.serverState?.ifBlank { latest.status } ?: latest.status
+                        val isDriver = _rideDriverMode.value
+                        com.elysium369.meet.core.notification.ElysiumNotificationHub.processRideStateChange(
+                            context = context,
+                            requestId = latest.requestId,
+                            effectiveState = effectiveState,
+                            isDriver = isDriver,
+                            partyName = if (isDriver) latest.passengerName else latest.assignedDriverName,
+                            price = latest.finalPrice ?: latest.priceOffer,
+                            pickupAddress = latest.pickupAddress,
+                            destAddress = latest.destAddress,
+                            currency = latest.currency
+                        )
+
+                        val role = if (isDriver) "DRIVER" else "PASSENGER"
+                        val rating = if (isDriver) latest.driverRating else latest.passengerRating
                         val isCompleted = latest.serverVersion > 0L && latest.serverState == "COMPLETED"
                         if (isCompleted && rating == null &&
                             !isRatingSettled(latest.requestId, role) &&
@@ -9273,11 +9347,25 @@ class ObdViewModel @Inject constructor(
             }
             jobOffersCollection = viewModelScope.launch {
                 rideDao.getOffersForRequest(request.requestId).collect {
+                    // ── Notification: nuevas ofertas de viaje ──
+                    com.elysium369.meet.core.notification.ElysiumNotificationHub.processNewOffers(
+                        context = context,
+                        tripId = request.requestId,
+                        offers = it,
+                        isDriver = _rideDriverMode.value
+                    )
                     _rideOffers.value = it
                 }
             }
             jobChatCollection = viewModelScope.launch {
                 rideDao.getChatMessagesFlow(request.requestId).collect {
+                    // ── Notification: nuevos mensajes de chat ──
+                    val currentUserId = currentCloudUserId() ?: activePrincipalKernel.current().id
+                    com.elysium369.meet.core.notification.ElysiumNotificationHub.processNewChatMessages(
+                        context = context,
+                        messages = it,
+                        currentUserId = currentUserId
+                    )
                     _rideChatMessages.value = it
                 }
             }
@@ -9290,6 +9378,7 @@ class ObdViewModel @Inject constructor(
         } else {
             _rideOffers.value = emptyList()
             _rideChatMessages.value = emptyList()
+            com.elysium369.meet.core.notification.ElysiumNotificationHub.resetRideCounters()
         }
     }
 

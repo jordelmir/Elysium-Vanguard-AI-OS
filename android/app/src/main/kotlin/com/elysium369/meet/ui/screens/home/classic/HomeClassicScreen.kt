@@ -676,7 +676,6 @@ fun HomeClassicScreen(
                 add(Triple("🔊", "SupremeBass Neon", MeetColors.cyberCyan) to MeetDestinations.SUPREME_BASS)
                 add(Triple("🐉", "DragonCalc Elysium", MeetColors.neonGreen) to MeetDestinations.DRAGON_CALC)
                 add(Triple("🎮", "Elysium Nexus Control", MeetColors.cyberCyan) to MeetDestinations.NEXUS_CONTROL)
-                add(Triple("📺", "Elysium ScreenMirror", MeetColors.cyberCyan) to MeetDestinations.SCREEN_MIRROR)
                 add(Triple("🗂️", "Elysium FileManager", MeetColors.neonGreen) to MeetDestinations.FILE_MANAGER)
                 add(Triple("🎥", "Elysium RecordShield", MeetColors.warning) to MeetDestinations.RECORD_SHIELD)
                 add(Triple("💬", "Mensajes", MeetColors.cyberCyan) to MeetDestinations.MESSAGES)

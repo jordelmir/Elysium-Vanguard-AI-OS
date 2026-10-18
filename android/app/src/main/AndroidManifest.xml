@@ -23,7 +23,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Strip unused LiveKit FOREGROUND_SERVICE_MEDIA_PROJECTION to prevent Google Play media projection audit flag -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" tools:node="remove" />
     
     <!-- WiFi and Network control (Normal permissions that satisfy FGS connectedDevice "any of" check) -->
     <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
@@ -194,10 +195,6 @@
             tools:node="remove" />
 
         <service android:name=".audio.supreme.SupremeBassService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
-        <service
-            android:name="com.jsm.core.webrtc.CaptureForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
     </application>
 
 </manifest>

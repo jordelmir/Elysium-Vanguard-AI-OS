@@ -231,11 +231,13 @@ class ObdForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID, 
-                "Diagnóstico OBD", 
-                NotificationManager.IMPORTANCE_LOW
+                "Elysium Diagnóstico OBD2 & LiveLink", 
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
-                description = "Estado de la conexión OBD2"
-                setShowBadge(false)
+                description = "Monitoreo en tiempo real de motor, DTCs y telemetría vehicular"
+                setShowBadge(true)
+                enableVibration(true)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
             }
             getSystemService(NotificationManager::class.java)?.createNotificationChannel(channel)
         }
@@ -245,16 +247,17 @@ class ObdForegroundService : Service() {
         val pendingIntent = PendingIntent.getActivity(this, 0,
             Intent(this, MainActivity::class.java).apply {
                 action = "OPEN_SCANNER"
-                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             }, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Elysium Vanguard AI OS")
+            .setContentTitle("🚗 Elysium Vanguard — Diagnóstico OBD2")
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(com.elysium369.meet.R.drawable.ic_elysium_notification)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
-            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
     

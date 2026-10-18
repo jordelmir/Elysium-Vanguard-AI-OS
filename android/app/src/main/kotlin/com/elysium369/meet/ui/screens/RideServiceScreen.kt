@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.widget.Toast
+import com.elysium369.meet.ride.location.RideLocationTrackingService
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -5797,22 +5798,74 @@ fun ActiveRidePanel(
         }
     }
 
-    // ═══ Trigger missing notifications on state transitions ═══
-    LaunchedEffect(ride.requestId, ride.serverState) {
-        when (ride.serverState) {
+    // ═══ Trigger heads-up pop-up notifications for ride offers ═══
+    var lastKnownOfferCount by remember(ride.requestId) { mutableStateOf(offers.size) }
+    LaunchedEffect(offers.size) {
+        if (!isDriver && offers.size > lastKnownOfferCount) {
+            val latestOffer = offers.lastOrNull { it.status == "PENDING" }
+            if (latestOffer != null) {
+                com.elysium369.meet.core.notification.ElysiumNotificationHub.showOfferReceivedPopUp(
+                    context = context,
+                    tripId = ride.requestId,
+                    driverName = latestOffer.driverName,
+                    priceCrc = latestOffer.counterPrice
+                )
+            }
+        }
+        lastKnownOfferCount = offers.size
+    }
+
+    // ═══ Trigger instant heads-up notifications on state transitions ═══
+    LaunchedEffect(ride.requestId, ride.serverState, ride.status) {
+        val effectiveState = ride.serverState?.ifBlank { ride.status } ?: ride.status
+        when (effectiveState) {
+            "ACCEPTED" -> {
+                val partyName = if (isDriver) "El pasajero" else (ride.assignedDriverName ?: "Tu conductor")
+                val price = ride.finalPrice ?: ride.priceOffer
+                com.elysium369.meet.core.notification.ElysiumNotificationHub.showOfferAcceptedPopUp(
+                    context = context,
+                    tripId = ride.requestId,
+                    partyName = partyName,
+                    priceCrc = price,
+                    isDriver = isDriver
+                )
+            }
+            "IN_PROGRESS" -> {
+                com.elysium369.meet.core.notification.ElysiumNotificationHub.showTripStartedPopUp(
+                    context = context,
+                    tripId = ride.requestId,
+                    destination = ride.destAddress
+                )
+                runCatching { RideLocationTrackingService.start(context, ride.requestId) }
+            }
             "ARRIVED" -> {
                 if (!isDriver) {
-                    rideNotifications.notifyDriverArrived(ride.requestId, ride.pickupAddress)
+                    com.elysium369.meet.core.notification.ElysiumNotificationHub.showDriverArrivedPopUp(
+                        context = context,
+                        tripId = ride.requestId,
+                        pickupAddress = ride.pickupAddress
+                    )
                 }
             }
             "COMPLETED" -> {
                 val fare = "${ride.finalPrice ?: ride.priceOffer} ${ride.currency}"
-                rideNotifications.notifyTripCompleted(ride.requestId, fare)
+                com.elysium369.meet.core.notification.ElysiumNotificationHub.showTripCompletedPopUp(
+                    context = context,
+                    tripId = ride.requestId,
+                    totalFare = fare
+                )
+                runCatching { RideLocationTrackingService.stop(context) }
                 showCompletedSummary = true
             }
             "CANCELLED" -> {
                 val cancelledBy = if (isDriver) "el pasajero" else "el conductor"
-                rideNotifications.notifyTripCancelled(ride.requestId, cancelledBy, "")
+                com.elysium369.meet.core.notification.ElysiumNotificationHub.showTripCancelledPopUp(
+                    context = context,
+                    tripId = ride.requestId,
+                    byWhom = cancelledBy,
+                    reason = ""
+                )
+                runCatching { RideLocationTrackingService.stop(context) }
             }
         }
     }

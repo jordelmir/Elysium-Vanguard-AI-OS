@@ -161,13 +161,14 @@ class RideLocationTrackingService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_map)
-            .setContentTitle("Viaje protegido por Elysium")
-            .setContentText("El recorrido se guarda durante el viaje por seguridad.")
+            .setSmallIcon(com.elysium369.meet.R.drawable.ic_elysium_notification)
+            .setContentTitle("🚕 Elysium Viajes: Rastreo de Ruta en Vivo")
+            .setContentText("Navegación GPS y telemetría de viaje activa. Seguridad forense habilitada.")
             .setContentIntent(openApp)
             .setOngoing(true)
-            .setOnlyAlertOnce(true)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .build()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
@@ -191,8 +192,11 @@ class RideLocationTrackingService : Service() {
 
     private fun createChannel() {
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Seguridad del viaje", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Rastreo visible durante un viaje activo"
+            NotificationChannel(CHANNEL_ID, "Elysium Viajes: Rastreo de Ruta", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Telemetría y navegación GPS de viaje activo"
+                enableVibration(true)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                setShowBadge(true)
             },
         )
     }
