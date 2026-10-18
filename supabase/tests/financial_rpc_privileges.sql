@@ -83,6 +83,20 @@ BEGIN
         v_failures := array_append(v_failures, 'ride_wallet_ledger_missing_RLS');
     END IF;
 
+    -- Verify RLS is enabled on all base tables in the public schema (Lintel / Supabase Security Advisory)
+    FOR v_rec IN
+        SELECT c.relname
+        FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE n.nspname = 'public'
+          AND c.relkind = 'r'
+          AND c.relrowsecurity = false
+        ORDER BY c.relname
+    LOOP
+        v_failures := array_append(v_failures, format('%s_missing_RLS', v_rec.relname));
+        RAISE NOTICE 'FAIL: Table public.% has RLS disabled', v_rec.relname;
+    END LOOP;
+
     IF array_length(v_failures, 1) IS NULL OR array_length(v_failures, 1) = 0 THEN
         RAISE NOTICE 'RESULT: PASS';
     ELSE
