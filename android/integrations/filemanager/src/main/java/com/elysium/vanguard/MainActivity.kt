@@ -9,11 +9,15 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.Modifier
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.compose.NavHost
@@ -27,6 +31,7 @@ import com.elysium.vanguard.features.viewer.IntegratedDocumentViewer
 import com.elysium.vanguard.ui.theme.TitanTheme
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
+import androidx.navigation.compose.currentBackStackEntryAsState
 import java.net.URLEncoder
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
@@ -41,8 +46,31 @@ import com.elysium.vanguard.core.util.FileOpenerUtil
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        /**
+         * Routes that own the full screen: the global "back to Elysium" bar is
+         * hidden so the video and the viewers are not obstructed.
+         */
+        private val IMMERSIVE_ROUTES = setOf(
+            "player/{path}/{mimeType}",
+            "viewer_image/{path}",
+            "editor_image/{path}",
+            "viewer_music/{path}",
+            "viewer_pdf/{path}",
+            "viewer_doc/{path}",
+            "viewer_archive/{path}",
+            "viewer_hex/{path}",
+            "album_detail/{albumName}"
+        )
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Load the saved accent selection (global theme + individual overrides)
+        // so the colors the client chose really survive a restart.
+        com.elysium.vanguard.ui.theme.SectionColorManager.init(this)
 
         checkAndRequestStorageRoot()
 
@@ -53,8 +81,22 @@ class MainActivity : ComponentActivity() {
             val navController = rememberNavController()
 
             TitanTheme {
+                // IMMERSIVE ROUTES: the global "back to Elysium" bar is hidden so the
+                // video and the document viewers own the whole screen.
+                val navBackStackEntry by navController.currentBackStackEntryAsState()
+                val currentRoute = navBackStackEntry?.destination?.route
+                val isImmersive = currentRoute in IMMERSIVE_ROUTES
+
                 Column(Modifier.fillMaxSize()) {
-                    TextButton(onClick = { finish() }) { Text("← Volver a Elysium") }
+                    if (!isImmersive) {
+                        // STATUS BAR INSET: the global back bar is drawn at the very
+                        // top of the window, so it must respect the system bar
+                        // inset or it renders underneath the clock and the battery.
+                        TextButton(
+                            onClick = { finish() },
+                            modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)
+                        ) { Text("← Volver a Elysium") }
+                    }
                 NavHost(
                     navController = navController,
                     startDestination = "splash",
@@ -184,6 +226,26 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     composable(
+                        route = "viewer_archive/{path}",
+                        arguments = listOf(navArgument("path") { type = NavType.StringType })
+                    ) { backStackEntry ->
+                        val path = URLDecoder.decode(backStackEntry.arguments?.getString("path") ?: "", StandardCharsets.UTF_8.toString())
+                        com.elysium.vanguard.features.viewer.ArchiveBrowserScreen(
+                            filePath = path,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable(
+                        route = "viewer_hex/{path}",
+                        arguments = listOf(navArgument("path") { type = NavType.StringType })
+                    ) { backStackEntry ->
+                        val path = URLDecoder.decode(backStackEntry.arguments?.getString("path") ?: "", StandardCharsets.UTF_8.toString())
+                        com.elysium.vanguard.features.viewer.HexViewerScreen(
+                            filePath = path,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
+                    composable(
                         route = "album_detail/{albumName}",
                         arguments = listOf(navArgument("albumName") { type = NavType.StringType })
                     ) { backStackEntry ->
@@ -298,21 +360,12 @@ class MainActivity : ComponentActivity() {
                 navController.navigate("viewer_music/$encodedPath")
             }
             else -> {
-                val context = this
-                try {
-                    val uri = FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.filemanager.provider",
-                        file
-                    )
-                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(uri, detectedMime)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    // ONLY use chooser as a last resort for unknown types
-                    context.startActivity(Intent.createChooser(intent, "Open with"))
-                } catch (e: Exception) {
-                    Unit
+                // IN-APP FALLBACK: every remaining type opens natively in the file
+                // manager instead of being handed to the system chooser.
+                if (com.elysium.vanguard.core.archive.ArchiveEngine.isArchive(file)) {
+                    navController.navigate("viewer_archive/$encodedPath")
+                } else {
+                    navController.navigate("viewer_hex/$encodedPath")
                 }
             }
         }

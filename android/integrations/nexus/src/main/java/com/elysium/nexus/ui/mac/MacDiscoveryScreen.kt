@@ -61,6 +61,7 @@ import com.elysium.nexus.ui.theme.NeonChip
 import com.elysium.nexus.ui.theme.NeonHeroCard
 import com.elysium.nexus.ui.theme.NeonSectionHeader
 import com.elysium.nexus.ui.theme.NeonStatusPill
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -91,69 +92,90 @@ fun MacDiscoveryScreen(
     var showHelp by remember { mutableStateOf(false) }
     var isScanning by remember { mutableStateOf(true) }
     var hosts by remember { mutableStateOf<List<DiscoveredHost>>(emptyList()) }
-    LaunchedEffect(Unit) {
+    var scanTrigger by remember { mutableStateOf(0) }
+
+    LaunchedEffect(scanTrigger) {
         isScanning = true
         val foundList = mutableListOf<DiscoveredHost>()
 
-        // 1. Fast parallel subnet & gateway probe (< 500ms)
-        launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                val fastHost = com.elysium.nexus.core.transport.mac.FastHostScanner.findFirstActiveHost(context, timeoutMs = 1500)
-                if (fastHost != null) {
-                    val hostType = HostType.MAC_DESKTOP
-                    val discovered = DiscoveredHost(
-                        id = fastHost.host,
-                        name = fastHost.name,
-                        type = hostType,
-                        signalStrength = 4,
-                        isOnline = true,
-                        host = fastHost.host,
-                        port = fastHost.port,
-                        publicKeyB64 = fastHost.publicKeyB64
-                    )
-                    if (foundList.none { it.host == discovered.host }) {
-                        foundList.add(discovered)
-                        hosts = foundList.toList()
-                    }
-                }
-            } catch (_: Throwable) {}
+        val rememberedHost = try {
+            (com.elysium.nexus.core.profile.LastDeviceMemory(context).get() as? com.elysium.nexus.core.profile.LastDevice.Mac)?.host
+        } catch (_: Throwable) {
+            null
         }
 
-        // 2. mDNS discovery
-        try {
-            kotlinx.coroutines.withTimeoutOrNull(2000) {
-                discovery.discover().collect { item ->
-                    val hostType = when {
-                        item.model.lowercase().contains("macbook") -> HostType.MAC_LAPTOP
-                        item.model.lowercase().contains("win") -> HostType.WINDOWS_PC
-                        item.model.lowercase().contains("linux") -> HostType.LINUX_PC
-                        else -> HostType.MAC_DESKTOP
+        // Run fast TCP probe and Bonjour concurrently for instantaneous discovery
+        coroutineScope {
+            // Coroutine 1: Fast TCP probe (checks remembered host first in <350ms, then gateways and local subnet)
+            launch {
+                try {
+                    val host = com.elysium.nexus.core.transport.mac.FastHostScanner
+                        .findFirstActiveHost(context, preferredHostIp = rememberedHost, timeoutMs = 2500)
+                    if (host != null) {
+                        val discovered = DiscoveredHost(
+                            id = host.host,
+                            name = host.name,
+                            type = HostType.MAC_DESKTOP,
+                            signalStrength = 4,
+                            isOnline = true,
+                            host = host.host,
+                            port = host.port,
+                            publicKeyB64 = host.publicKeyB64
+                        )
+                        synchronized(foundList) {
+                            if (foundList.none { it.host == discovered.host }) {
+                                foundList.add(discovered)
+                                hosts = foundList.toList()
+                                android.util.Log.i("MacDiscoveryScreen", "Fast TCP probe found host=${discovered.host}:${discovered.port}")
+                            }
+                        }
                     }
-                    val discovered = DiscoveredHost(
-                        id = item.host,
-                        name = item.name,
-                        type = hostType,
-                        signalStrength = 4,
-                        isOnline = true,
-                        host = item.host,
-                        port = item.port,
-                        publicKeyB64 = item.publicKeyB64
-                    )
-                    if (foundList.none { it.host == discovered.host }) {
-                        foundList.add(discovered)
-                        hosts = foundList.toList()
-                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("MacDiscoveryScreen", "Fast TCP probe failed: ${e.message}")
                 }
             }
-        } catch (_: Throwable) {}
-        isScanning = false
 
-        // Auto-connect to the first discovered host on Wi-Fi automatically!
-        val autoTarget = foundList.firstOrNull { it.isOnline } ?: foundList.firstOrNull()
-        if (autoTarget != null) {
-            delay(150)
-            onHostSelected(autoTarget)
+            // Coroutine 2: Bonjour discovery for rich metadata
+            launch {
+                try {
+                    kotlinx.coroutines.withTimeoutOrNull(3_000) {
+                        discovery.discover().collect { item ->
+                            val hostType = when {
+                                item.model.lowercase().contains("macbook") -> HostType.MAC_LAPTOP
+                                item.model.lowercase().contains("win") -> HostType.WINDOWS_PC
+                                item.model.lowercase().contains("linux") -> HostType.LINUX_PC
+                                else -> HostType.MAC_DESKTOP
+                            }
+                            val discovered = DiscoveredHost(
+                                id = item.host,
+                                name = item.name,
+                                type = hostType,
+                                signalStrength = 4,
+                                isOnline = true,
+                                host = item.host,
+                                port = item.port,
+                                publicKeyB64 = item.publicKeyB64
+                            )
+                            synchronized(foundList) {
+                                val existingIndex = foundList.indexOfFirst { it.host == discovered.host }
+                                if (existingIndex >= 0) {
+                                    // Update with richer Bonjour metadata
+                                    foundList[existingIndex] = discovered
+                                } else {
+                                    foundList.add(discovered)
+                                }
+                                hosts = foundList.toList()
+                                android.util.Log.i("MacDiscoveryScreen", "Bonjour host found name=${discovered.name} host=${discovered.host}:${discovered.port}")
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("MacDiscoveryScreen", "Bonjour discovery failed: ${e.message}")
+                }
+            }
+            Unit
         }
+        isScanning = false
     }
     ResponsiveContainer(modifier = modifier) { info ->
         Column(
@@ -242,36 +264,18 @@ fun MacDiscoveryScreen(
                     )
                 }
             }
-            // === NO HOSTS FOUND ===
+            // === NO HOSTS FOUND: STEP-BY-STEP GITHUB GUIDE ===
             if (!isScanning && hosts.isEmpty()) {
-                NeonCard(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = info.sidePadding, vertical = 4.dp),
-                    accent = ElysiumColors.NeonOrange
-                ) {
-                    Text(
-                        text = "No se encontraron Macs ni PCs",
-                        style = TextStyle(
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
-                        ),
-                        color = ElysiumColors.NeonOrange
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Asegúrate de que tu Mac o PC esté encendido y " +
-                            "conectado a la misma red Wi-Fi que tu teléfono. " +
-                            "También puedes agregar el dispositivo manualmente.",
-                        style = TextStyle(fontSize = 13.sp, lineHeight = 18.sp),
-                        color = ElysiumColors.OnSurface
-                    )
-                }
+                MacAgentDownloadGuide(
+                    isInitiallyExpanded = true,
+                    onRetryScan = { scanTrigger++ },
+                    modifier = Modifier.padding(horizontal = info.sidePadding, vertical = 6.dp)
+                )
             }
             // === MANUAL ADD (available if automatic connection fails / no hosts found) ===
             if (!isScanning) {
                 NeonSectionHeader(
-                    text = "Conexión Manual",
+                    text = "Conexión Manual · Wi-Fi / red local",
                     accent = ElysiumColors.NeonPurple,
                     modifier = Modifier.padding(
                         horizontal = info.sidePadding,
@@ -305,7 +309,7 @@ fun MacDiscoveryScreen(
                         }
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "Agregar manualmente",
+                                text = "Agregar Mac por IP",
                                 style = TextStyle(
                                     fontSize = 16.sp,
                                     fontWeight = FontWeight.Bold
@@ -313,12 +317,22 @@ fun MacDiscoveryScreen(
                                 color = ElysiumColors.OnSurface
                             )
                             Text(
-                                text = "Conectar por IP o nombre de host",
+                                text = "Usar la IP local del Mac y el puerto 7878",
                                 style = TextStyle(fontSize = 12.sp),
                                 color = ElysiumColors.OnSurfaceMuted
                             )
                         }
                     }
+                }
+
+                // If hosts WERE found, also expose the guide in collapsed state
+                if (hosts.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    MacAgentDownloadGuide(
+                        isInitiallyExpanded = false,
+                        onRetryScan = { scanTrigger++ },
+                        modifier = Modifier.padding(horizontal = info.sidePadding, vertical = 6.dp)
+                    )
                 }
             } // end if (!isScanning)
             Spacer(modifier = Modifier.height(48.dp))
@@ -334,9 +348,8 @@ fun MacDiscoveryScreen(
                 "Toca el dispositivo al que quieres conectarte.",
                 "Si no aparece, toca 'Agregar manualmente'."
             ),
-            tip = "Para que tu Mac aparezca, instala el agente Elysium " +
-                "(próximamente disponible). Mientras tanto, puedes ver " +
-                "cómo será la conexión con los dispositivos de prueba.",
+            tip = "Para que tu Mac aparezca, descarga e instala el agente Elysium Nexus desde GitHub Releases " +
+                "siguiendo la guía interactiva paso a paso que se muestra en esta pantalla.",
             onDismiss = { showHelp = false }
         )
     }
@@ -443,7 +456,7 @@ private fun HostCard(
             }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = host.name,
+                    text = "Dispositivo por Wi-Fi",
                     style = TextStyle(
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold
@@ -452,7 +465,7 @@ private fun HostCard(
                     maxLines = 1
                 )
                 Text(
-                    text = host.type.labelEs,
+                    text = "${host.type.labelEs} · ${host.host}:${host.port}",
                     style = TextStyle(fontSize = 12.sp),
                     color = ElysiumColors.OnSurfaceMuted,
                     maxLines = 1

@@ -28,7 +28,7 @@ class FileFilterParser @javax.inject.Inject constructor() {
         val type: TypeFilter = TypeFilter.ANY
     )
 
-    enum class TypeFilter { ANY, FILE, DIR, IMAGE, VIDEO, AUDIO, DOC }
+    enum class TypeFilter { ANY, FILE, DIR, IMAGE, VIDEO, AUDIO, DOC, ARCHIVE, APP, CODE, FONT }
 
     fun parse(query: String): Filter {
         var nameContains: String? = null
@@ -52,14 +52,14 @@ class FileFilterParser @javax.inject.Inject constructor() {
                 token.startsWith("name:") -> {
                     nameContains = token.removePrefix("name:")
                 }
-                token.startsWith("ext:") -> {
-                    val raw2 = token.removePrefix("ext:")
+                token.startsWith("ext:") || (token.startsWith("ext") && token.length > 3 && !token[3].isLetterOrDigit()) -> {
+                    val raw2 = token.removePrefix("ext:").removePrefix("ext").removePrefix(":")
                     extensions = raw2.split(',').map { it.trim().lowercase() }
                         .filter { it.isNotEmpty() }
                         .toSet()
                 }
-                token.startsWith("size:") -> {
-                    val op = token.removePrefix("size:")
+                token.startsWith("size:") || token.startsWith("size") && token.drop(4).firstOrNull()?.let { it in "><=" } == true -> {
+                    val op = token.removePrefix("size:").removePrefix("size").removePrefix(":")
                     val (cmp, num) = when {
                         op.startsWith(">=") -> ">=" to op.removePrefix(">=")
                         op.startsWith("<=") -> "<=" to op.removePrefix("<=")
@@ -86,8 +86,8 @@ class FileFilterParser @javax.inject.Inject constructor() {
                         if (it.second != null) modifiedBefore = it.second
                     }
                 }
-                token.startsWith("type:") -> {
-                    val t = token.removePrefix("type:").lowercase()
+                token.startsWith("type:") || (token.startsWith("type") && token.length > 4 && !token[4].isLetterOrDigit()) -> {
+                    val t = token.removePrefix("type:").removePrefix("type").removePrefix(":").lowercase()
                     type = when (t) {
                         "file", "f" -> TypeFilter.FILE
                         "dir", "folder", "d" -> TypeFilter.DIR
@@ -95,6 +95,10 @@ class FileFilterParser @javax.inject.Inject constructor() {
                         "video", "vid" -> TypeFilter.VIDEO
                         "audio", "music" -> TypeFilter.AUDIO
                         "doc", "document" -> TypeFilter.DOC
+                        "archive", "archives", "compressed", "zip" -> TypeFilter.ARCHIVE
+                        "app", "apps", "apk" -> TypeFilter.APP
+                        "code", "source" -> TypeFilter.CODE
+                        "font", "fonts" -> TypeFilter.FONT
                         else -> TypeFilter.ANY
                     }
                 }
@@ -117,7 +121,12 @@ class FileFilterParser @javax.inject.Inject constructor() {
         )
     }
 
-    fun matches(file: File, filter: Filter): Boolean {
+    /**
+     * @param ignoreName when true the name constraint is not applied. The global
+     *        search uses the fuzzy engine for the name, so a substring filter
+     *        would reject perfectly good fuzzy matches.
+     */
+    fun matches(file: File, filter: Filter, ignoreName: Boolean = false): Boolean {
         if (!file.exists()) return false
 
         // type
@@ -140,11 +149,29 @@ class FileFilterParser @javax.inject.Inject constructor() {
                 if (file.isDirectory) return false
                 if (extensionOf(file) !in DOC_EXTS) return false
             }
+            TypeFilter.ARCHIVE -> {
+                if (file.isDirectory) return false
+                if (extensionOf(file) !in ARCHIVE_EXTS) return false
+            }
+            TypeFilter.APP -> {
+                if (file.isDirectory) return false
+                if (extensionOf(file) !in APP_EXTS) return false
+            }
+            TypeFilter.CODE -> {
+                if (file.isDirectory) return false
+                if (extensionOf(file) !in CODE_EXTS) return false
+            }
+            TypeFilter.FONT -> {
+                if (file.isDirectory) return false
+                if (extensionOf(file) !in FONT_EXTS) return false
+            }
             TypeFilter.ANY -> Unit
         }
 
-        filter.nameContains?.let {
-            if (!file.name.contains(it, ignoreCase = true)) return false
+        if (!ignoreName) {
+            filter.nameContains?.let {
+                if (!file.name.contains(it, ignoreCase = true)) return false
+            }
         }
         filter.nameRegex?.let {
             if (!it.containsMatchIn(file.name)) return false
@@ -208,5 +235,16 @@ class FileFilterParser @javax.inject.Inject constructor() {
         private val VIDEO_EXTS = setOf("mp4", "mkv", "mov", "webm", "avi", "flv", "wmv", "m4v")
         private val AUDIO_EXTS = setOf("mp3", "wav", "flac", "aac", "ogg", "m4a", "opus", "wma")
         private val DOC_EXTS = setOf("pdf", "doc", "docx", "odt", "rtf", "txt", "md", "epub")
+        private val ARCHIVE_EXTS = setOf(
+            "zip", "zipx", "rar", "7z", "tar", "gz", "tgz", "bz2", "tbz2", "xz", "txz",
+            "zst", "iso", "pkg", "xar", "cpio", "ar", "deb", "lzh", "cab", "jar", "apk", "xapk", "apks"
+        )
+        private val APP_EXTS = setOf("apk", "apks", "xapk", "ipa", "deb", "msi", "appimage")
+        private val CODE_EXTS = setOf(
+            "kt", "kts", "java", "py", "js", "jsx", "ts", "tsx", "c", "h", "cpp", "hpp", "cs",
+            "swift", "go", "rs", "rb", "php", "sh", "bash", "zsh", "sql", "json", "xml", "yaml",
+            "yml", "toml", "gradle", "properties", "html", "css", "vue", "dart", "lua", "r", "m"
+        )
+        private val FONT_EXTS = setOf("ttf", "otf", "ttc", "woff", "woff2", "fon")
     }
 }

@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -40,6 +41,7 @@ import com.elysium.vanguard.ui.components.NeonGlowIcon
 import com.elysium.vanguard.ui.components.SovereignLifeWrapper
 import com.elysium.vanguard.ui.components.SovereignCard
 import com.elysium.vanguard.ui.components.GlassPillBadge
+import com.elysium.vanguard.ui.components.SovereignGridScrollbar
 import com.elysium.vanguard.ui.components.AnimatedEmptyState
 import com.elysium.vanguard.ui.components.MatrixRain
 import androidx.compose.ui.graphics.Brush
@@ -160,7 +162,9 @@ fun GalleryScreen(
             if (showColorDialog) {
                 ColorSelectionDialog(
                     sectionName = "GALLERY",
-                    onColorSelected = { SectionColorManager.galleryAccent = it },
+                    onColorSelected = { color, applyToAll ->
+                        SectionColorManager.updateAccent(SectionColorManager.SECTION_GALLERY, color, applyToAll)
+                    },
                     onDismiss = { showColorDialog = false }
                 )
             }
@@ -194,42 +198,50 @@ private fun PhotosTab(viewModel: GalleryViewModel) {
             color = TitanColors.NeonCyan
         )
     } else {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 90.dp),
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            for ((date, files) in groupedMedia) {
-                item(span = { GridItemSpan(maxLineSpan) }) {
-                    GlassPillBadge(
-                        text = date.uppercase(),
-                        color = TitanColors.NeonCyan,
-                        modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
-                    )
-                }
-                items(
-                    count = files.size,
-                    key = { index -> files[index].id },
-                    span = { GridItemSpan(1) }
-                ) { index ->
-                    val media = files[index]
-                    MediaThumbnail(
-                        media = media,
-                        onClick = { viewModel.openMedia(media) },
-                        onOptionClick = { action ->
-                            when (action) {
-                                "FAVORITE" -> viewModel.toggleFavorite(media.id)
-                                "DELETE" -> viewModel.deleteMedia(media)
-                                "SHARE" -> viewModel.shareMedia(media)
-                                "EDIT" -> viewModel.editMedia(media)
-                                "WALLPAPER" -> viewModel.setWallpaper(media)
+        val gridState = rememberLazyGridState()
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Adaptive(minSize = 90.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                for ((date, files) in groupedMedia) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
+                        GlassPillBadge(
+                            text = date.uppercase(),
+                            color = TitanColors.NeonCyan,
+                            modifier = Modifier.padding(top = 12.dp, bottom = 6.dp)
+                        )
+                    }
+                    items(
+                        count = files.size,
+                        key = { index -> files[index].id },
+                        span = { GridItemSpan(1) }
+                    ) { index ->
+                        val media = files[index]
+                        MediaThumbnail(
+                            media = media,
+                            onClick = { viewModel.openMedia(media) },
+                            onOptionClick = { action ->
+                                when (action) {
+                                    "FAVORITE" -> viewModel.toggleFavorite(media.id)
+                                    "DELETE" -> viewModel.deleteMedia(media)
+                                    "SHARE" -> viewModel.shareMedia(media)
+                                    "EDIT" -> viewModel.editMedia(media)
+                                    "WALLPAPER" -> viewModel.setWallpaper(media)
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
+            SovereignGridScrollbar(
+                state = gridState,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
         }
     }
 }
@@ -241,18 +253,26 @@ private fun AlbumsTab(viewModel: GalleryViewModel, onAlbumClick: (String) -> Uni
     if (albums.isEmpty()) {
         AnimatedEmptyState(icon = Icons.Default.PhotoAlbum, message = "NO ALBUMS FOUND", color = TitanColors.QuantumPink)
     } else {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 150.dp),
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            items(albums) { album ->
-                SovereignLifeWrapper {
-                    AlbumItem(album, onClick = { onAlbumClick(album.name) })
+        val gridState = rememberLazyGridState()
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Adaptive(minSize = 150.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                items(albums) { album ->
+                    SovereignLifeWrapper {
+                        AlbumItem(album, onClick = { onAlbumClick(album.name) })
+                    }
                 }
             }
+            SovereignGridScrollbar(
+                state = gridState,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
         }
     }
 }
@@ -327,26 +347,34 @@ private fun RecentTab(viewModel: GalleryViewModel) {
     if (recent.isEmpty()) {
         AnimatedEmptyState(icon = Icons.Default.History, message = "NO RECENT MEDIA", color = TitanColors.RadioactiveGreen)
     } else {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 90.dp),
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            items(
-                count = recent.size,
-                key = { index -> recent[index].id }
-            ) { index ->
-                val media = recent[index]
-                MediaThumbnail(
-                    media = media,
-                    onClick = { viewModel.openMedia(media) },
-                    onOptionClick = { action ->
-                        if (action == "FAVORITE") viewModel.toggleFavorite(media.id)
-                    }
-                )
+        val gridState = rememberLazyGridState()
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Adaptive(minSize = 90.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                items(
+                    count = recent.size,
+                    key = { index -> recent[index].id }
+                ) { index ->
+                    val media = recent[index]
+                    MediaThumbnail(
+                        media = media,
+                        onClick = { viewModel.openMedia(media) },
+                        onOptionClick = { action ->
+                            if (action == "FAVORITE") viewModel.toggleFavorite(media.id)
+                        }
+                    )
+                }
             }
+            SovereignGridScrollbar(
+                state = gridState,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
         }
     }
 }
@@ -359,26 +387,34 @@ private fun FavoritesTab(viewModel: GalleryViewModel) {
     if (favorites.isEmpty()) {
         AnimatedEmptyState(icon = Icons.Default.FavoriteBorder, message = "NO FAVORITES YET", color = TitanColors.NeonRed)
     } else {
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 90.dp),
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            items(
-                count = favorites.size,
-                key = { index -> favorites[index].id }
-            ) { index ->
-                val media = favorites[index]
-                MediaThumbnail(
-                    media = media,
-                    onClick = { viewModel.openMedia(media) },
-                    onOptionClick = { action ->
-                        if (action == "FAVORITE") viewModel.toggleFavorite(media.id)
-                    }
-                )
+        val gridState = rememberLazyGridState()
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyVerticalGrid(
+                state = gridState,
+                columns = GridCells.Adaptive(minSize = 90.dp),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                items(
+                    count = favorites.size,
+                    key = { index -> favorites[index].id }
+                ) { index ->
+                    val media = favorites[index]
+                    MediaThumbnail(
+                        media = media,
+                        onClick = { viewModel.openMedia(media) },
+                        onOptionClick = { action ->
+                            if (action == "FAVORITE") viewModel.toggleFavorite(media.id)
+                        }
+                    )
+                }
             }
+            SovereignGridScrollbar(
+                state = gridState,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
         }
     }
 }

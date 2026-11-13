@@ -14,6 +14,11 @@ android {
     compileSdk = 37
     defaultConfig { minSdk = 26 }
     buildFeatures { compose = true }
+    testOptions {
+        // The Android framework stubs return defaults instead of throwing, so the
+        // pure JVM tests can exercise the code paths that touch the framework.
+        unitTests.isReturnDefaultValues = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -52,4 +57,21 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.0")
     implementation("androidx.hilt:hilt-work:1.2.0")
     kapt("androidx.hilt:hilt-compiler:1.2.0")
+
+    // ── UNIVERSAL ARCHIVE ENGINE ─────────────────────────────────────────────
+    // ZIP (incl. AES encryption + password), ZIP64, split volumes.
+    implementation("net.lingala.zip4j:zip4j:2.11.5")
+    // TAR / GZIP / BZIP2 / CPIO / AR / DUMP / 7-Zip readers.
+    implementation("org.apache.commons:commons-compress:1.26.2")
+    // XZ + LZMA2 (required by the 7-Zip reader for LZMA/LZMA2 coders).
+    implementation("org.tukaani:xz:1.9")
+    // Zstandard (7-Zip zstd coder + standalone .zst).
+    implementation("com.github.luben:zstd-jni:1.5.5-11")
+    // RAR3 / RAR5 reading with password support.
+    implementation("com.github.junrar:junrar:7.5.5")
+    // PDF text extraction for PDF -> Word conversion.
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+
+    // ── TESTS ────────────────────────────────────────────────────────────────
+    testImplementation("junit:junit:4.13.2")
 }

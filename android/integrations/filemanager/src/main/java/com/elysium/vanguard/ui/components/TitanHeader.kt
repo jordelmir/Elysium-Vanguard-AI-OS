@@ -79,8 +79,8 @@ fun TitanHeader(
     if (showColorDialog) {
         ColorSelectionDialog(
             sectionName = sectionName,
-            onColorSelected = { newColor ->
-                SectionColorManager.updateAccent(sectionName, newColor)
+            onColorSelected = { newColor, applyToAll ->
+                SectionColorManager.updateAccent(sectionName, newColor, applyToAll)
             },
             onDismiss = { showColorDialog = false }
         )

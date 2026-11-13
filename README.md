@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Android-4.29.0%20%7C%20code%2063-00BCD4?style=flat-square&logo=android&logoColor=white" alt="Android version" />
-  <img src="https://img.shields.io/badge/Room-schema%2090-39FF14?style=flat-square" alt="Room schema" />
+  <img src="https://img.shields.io/badge/Android-4.30.1%20%7C%20code%2065-00BCD4?style=flat-square&logo=android&logoColor=white" alt="Android version" />
+  <img src="https://img.shields.io/badge/Room-schema%2091-39FF14?style=flat-square" alt="Room schema" />
   <img src="https://img.shields.io/badge/Architecture-offline--first-7F52FF?style=flat-square" alt="Offline first" />
   <img src="https://img.shields.io/badge/Kotlin-2.4.0-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin" />
   <img src="https://img.shields.io/badge/AGP-9.2.1-3DDC84?style=flat-square&logo=gradle&logoColor=white" alt="AGP" />
@@ -24,11 +24,11 @@ La regla del producto es simple: no se presenta una intención local, una
 estimación o un dato de demostración como un hecho físico o una confirmación
 del servidor.
 
-## Estado del código en este checkpoint (Safety Scientific Core, Forensic Research Hub & Territorial Map Integration)
+## Estado del código en este checkpoint (Elysium Nexus Universal Mac Mirroring, Trackpad Selection & Multiplatform Interactive Notifications)
 
-- **Android:** `versionName 4.29.0`, `versionCode 63`.
-- **Contrato de versión del paquete:** `4.29.0` (sincronizado en `android/app/build.gradle.kts`, `package.json` y `package-lock.json`).
-- **Room Database:** `version 90` con 90 migraciones registradas (`MIGRATION_1_6` hasta `MIGRATION_89_90`).
+- **Android:** `versionName 4.30.1`, `versionCode 65`.
+- **Contrato de versión del paquete:** `4.30.1` (sincronizado en `android/app/build.gradle.kts`, `package.json` y `package-lock.json`).
+- **Room Database:** `version 91` con 91 migraciones registradas (`MIGRATION_1_6` hasta `MIGRATION_90_91`).
 
 ### Stack Tecnológico
 
@@ -163,6 +163,24 @@ evidencia remota de PostgreSQL.
   - Firmas digitales Ed25519 con verificación en tiempo de ejecución.
   - Paridad de hashing SHA-256 canónico byte-exacto entre TypeScript y Kotlin (`scripts/verify-custody-parity.sh`).
   - Invariantes negativos probados: inmutabilidad de evidencias atestiguadas, rechazo de estados optimistas y preservación de linaje de fuentes.
+
+### 🎮 Elysium Nexus Universal Control & Screen Mirroring (Mac & PC)
+
+- **Transmisión de Pantalla en Tiempo Real (1080p Stream):**
+  - Espejo fluido de pantalla completa de macOS a Android con latencia sub-50ms y decodificación eficiente `RGB_565`.
+  - Protocolo binario seguro sobre canal TCP 7878 cifrado con X25519 ECDH + ChaCha20-Poly1305.
+- **Trackpad de Precisión y Control Táctil Completo:**
+  - Desplazamiento relativo suave, doble-clic nativo de Cocoa (`mouseEventClickState` 1..3) para apertura de apps y archivos.
+  - Detección de arrastre y selección por pulsación sostenida (long-press drag) para selección precisa de texto, ventanas e íconos.
+  - Botón táctil dedicado `[ 🔒 SELECCIONAR ]` / `[ 🔓 ARRASTRAR ]` con bloqueo sostenido de botón izquierdo para selecciones complejas.
+  - Mapeo táctil directo (Direct Touch Screen) con sincronización de coordenadas absolutas y clics derecho/izquierdo.
+- **Notificaciones Interactivas del Sistema (Android & macOS):**
+  - **Android:** Notificación persistente interactiva con acción de desconexión en un toque (`MacControlNotificationManager`).
+  - **macOS:** Notificaciones nativas vía `UNUserNotificationCenter` (`NEXUS_REMOTE_SESSION`) con estado de emparejamiento, streaming y acción "Desconectar Sesión".
+- **Guía de Instalación Paso a Paso Integrada (`MacAgentDownloadGuide`):**
+  - Tarjeta interactiva integrada en `MacDiscoveryScreen` y `MacPairingScreen` con descarga directa del instalador firmado `Elysium-Nexus-Universal-Controller.dmg` desde GitHub Releases.
+  - Botones de acción directa: "Abrir GitHub" con intent nativo y "Copiar Enlace".
+  - Instrucciones guiadas para permisos de macOS (Grabación de pantalla y Accesibilidad) y emparejamiento con PIN de 6 dígitos.
 
 ## Arquitectura de verdad
 

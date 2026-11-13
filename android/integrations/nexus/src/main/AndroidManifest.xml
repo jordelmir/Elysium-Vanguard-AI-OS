@@ -17,5 +17,9 @@
         <activity android:name="com.elysium.nexus.ui.MainActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden" />
+        <service
+            android:name="com.elysium.nexus.core.transport.mac.NexusScreenShareService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>

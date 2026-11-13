@@ -122,6 +122,14 @@ class RecordingService : LifecycleService() {
         private val _currentRecordingType = MutableStateFlow<RecordingType?>(null)
         val currentRecordingType: StateFlow<RecordingType?> = _currentRecordingType.asStateFlow()
 
+        /** True when the front and the rear camera are recording at the same time. */
+        private val _isDualCamera = MutableStateFlow(false)
+        val isDualCamera: StateFlow<Boolean> = _isDualCamera.asStateFlow()
+
+        /** Honest status of the dual mode: why it failed, when it failed. */
+        private val _dualCameraStatus = MutableStateFlow<String?>(null)
+        val dualCameraStatus: StateFlow<String?> = _dualCameraStatus.asStateFlow()
+
         // Static provider for Live Preview (Reactive)
         private val _previewSurfaceProvider = MutableStateFlow<Preview.SurfaceProvider?>(null)
         var previewSurfaceProvider: Preview.SurfaceProvider?
@@ -272,6 +280,8 @@ class RecordingService : LifecycleService() {
         recordingOwner = RecordShieldIdentity.principalId() ?: "local_sovereign_principal"
 
         isDualCameraMode = dualCamera
+        _isDualCamera.value = dualCamera
+        _dualCameraStatus.value = null
         Log.i(TAG, "Starting recording: type=$type, dualCamera=$dualCamera")
 
         // Start foreground immediately to avoid ANR on Android 12+
@@ -617,6 +627,9 @@ class RecordingService : LifecycleService() {
 
                 } catch (e: Exception) {
                     Log.e(TAG, "Dual camera chunk $chunkIndex failed", e)
+                    // The client is told what happened instead of the recording
+                    // silently producing nothing.
+                    _dualCameraStatus.value = "FALLO DE CAMARA SIMULTANEA: ${e.message}"
                     dualCameraManager?.release()
                     dualCameraManager = null
                 }

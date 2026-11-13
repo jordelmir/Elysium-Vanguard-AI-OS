@@ -8,6 +8,8 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.*
@@ -33,7 +35,10 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -61,6 +66,12 @@ import androidx.compose.ui.geometry.Offset
 import com.elysium.vanguard.core.util.CompressionEngine
 import com.elysium.vanguard.core.util.ConversionEngine
 import com.elysium.vanguard.core.util.FileCategory
+import com.elysium.vanguard.core.archive.ArchiveEngine
+import com.elysium.vanguard.core.archive.ArchiveException
+import com.elysium.vanguard.core.rename.BatchRenameEngine
+import com.elysium.vanguard.core.archive.ArchiveSetResolver
+import com.elysium.vanguard.core.search.GlobalSearchEngine
+import com.elysium.vanguard.core.search.SearchSort
 import com.elysium.vanguard.ui.components.TitanLogo
 import com.elysium.vanguard.ui.components.TitanLogoStyle
 import com.elysium.vanguard.ui.components.TitanHeader
@@ -68,6 +79,7 @@ import com.elysium.vanguard.ui.components.SovereignLifeWrapper
 import com.elysium.vanguard.ui.components.PulseContainer
 import com.elysium.vanguard.ui.components.SovereignCard
 import com.elysium.vanguard.core.util.FileOpenerUtil
+import com.elysium.vanguard.core.util.StorageStats
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -93,6 +105,13 @@ fun FileManagerScreen(
     var isTerminalMode by remember { mutableStateOf(false) } // Terminal Mode State
     val files by viewModel.files.collectAsState()
 
+    // GLOBAL SEARCH state
+    val searchHits by viewModel.searchHits.collectAsState()
+    val searchProgress by viewModel.searchProgress.collectAsState()
+    val searchWholeDevice by viewModel.searchScopeWholeDevice.collectAsState()
+    val searchProgressSnapshot = searchProgress
+    val isSearching = searchProgressSnapshot != null && !searchProgressSnapshot.finished
+
     // Recovery Fix: Local filtering logic to restore search functionality
     val filteredFiles = remember(files, searchQuery) {
         if (searchQuery.isEmpty()) files
@@ -117,8 +136,143 @@ fun FileManagerScreen(
     var fileToRename by remember { mutableStateOf<TitanFile?>(null) }
     var fileForDetails by remember { mutableStateOf<TitanFile?>(null) }
 
+    // Universal extraction: a pending extraction waiting for its password.
+    var pendingExtraction by remember { mutableStateOf<PendingExtraction?>(null) }
+
+    // Search by file type: the token appended to the query (null = every type).
+    var searchTypeToken by remember { mutableStateOf<String?>(null) }
+
+    // How the search results are ordered.
+    var searchSort by remember { mutableStateOf(SearchSort.RELEVANCE) }
+
+    // Batch rename of the current selection.
+    var showBatchRenameDialog by remember { mutableStateOf(false) }
+
+    // Options dialog for the item currently marked.
+    var optionsForSelection by remember { mutableStateOf<TitanFile?>(null) }
+
+    // Compression: the selection waiting for a format, and the one waiting for a password.
+    var compressTarget by remember { mutableStateOf<List<String>?>(null) }
+    var pendingPasswordCompress by remember { mutableStateOf<PendingPasswordCompress?>(null) }
+
+    // Blocking storage warning raised by the extraction pre-flight check.
+    var spaceWarning by remember { mutableStateOf<String?>(null) }
+
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+
+    /**
+     * Starts a universal extraction. When the archive is encrypted the user is
+     * asked for the password before anything is written to disk.
+     */
+    val requestExtraction: (File) -> Unit = { sourceFile ->
+        scope.launch {
+            val set = ArchiveSetResolver.resolve(sourceFile)
+            val parts = set.parts.ifEmpty { listOf(sourceFile) }
+            // The engine creates one folder per archive inside the given parent.
+            val destination = sourceFile.parentFile
+            val needsPassword = withContext(Dispatchers.IO) {
+                parts.any { part ->
+                    // BUG FIX: a "password required" failure means the archive IS
+                    // encrypted. Treating it as "not encrypted" would extract a
+                    // 7z or RAR with a password without ever asking for it.
+                    val result = ArchiveEngine.inspect(part)
+                    val manifest = result.getOrNull()
+                    if (manifest != null) {
+                        manifest.encrypted
+                    } else {
+                        val error = result.exceptionOrNull()
+                        error is ArchiveException.PasswordRequired ||
+                            error is ArchiveException.WrongPassword
+                    }
+                }
+            }
+            val preflight = withContext(Dispatchers.IO) { viewModel.preflightExtraction(parts) }
+            if (preflight != null && !preflight.hasSpace) {
+                spaceWarning = "NOT ENOUGH SPACE\n" +
+                    "This extraction needs ${formatBytes(preflight.requiredBytes)} but only " +
+                    "${formatBytes(preflight.availableBytes)} are free."
+            } else if (needsPassword) {
+                pendingExtraction = PendingExtraction(parts, destination)
+            } else {
+                viewModel.extractArchives(parts, destination)
+            }
+        }
+    }
+
+    val requestConversion: (File, ConversionMode) -> Unit = { sourceFile, mode ->
+        viewModel.convertFiles(listOf(sourceFile), mode)
+    }
+
+    /**
+     * Runs the search with the free text plus the selected type filter.
+     */
+    val runSearch: (String) -> Unit = { text ->
+        val token = searchTypeToken
+        viewModel.search(
+            listOfNotNull(text.takeIf { it.isNotBlank() }, token).joinToString(" ")
+        )
+    }
+
+    /**
+     * Verifies the integrity of an archive without extracting it.
+     */
+    val requestVerification: (File) -> Unit = { sourceFile ->
+        viewModel.verifyArchive(sourceFile)
+    }
+
+    /**
+     * Batch extraction: every selected archive becomes its own folder, and a
+     * multi volume set is always resolved as a whole.
+     */
+    val batchExtract: () -> Unit = {
+        val archives = selectedFiles.map { File(it) }.filter { ArchiveEngine.isArchive(it) }
+        if (archives.isEmpty()) {
+            Toast.makeText(context, "Select one or more archives to extract", Toast.LENGTH_SHORT).show()
+        } else {
+            scope.launch {
+                val preflight = withContext(Dispatchers.IO) { viewModel.preflightExtraction(archives) }
+                if (preflight != null && !preflight.hasSpace) {
+                    spaceWarning = "NOT ENOUGH SPACE\n" +
+                        "This extraction needs ${formatBytes(preflight.requiredBytes)} but only " +
+                        "${formatBytes(preflight.availableBytes)} are free."
+                    return@launch
+                }
+                val needsPassword = withContext(Dispatchers.IO) {
+                    archives.any { archive ->
+                        val result = ArchiveEngine.inspect(archive)
+                        val manifest = result.getOrNull()
+                        if (manifest != null) {
+                            manifest.encrypted
+                        } else {
+                            val error = result.exceptionOrNull()
+                            error is ArchiveException.PasswordRequired ||
+                                error is ArchiveException.WrongPassword
+                        }
+                    }
+                }
+                val destination = File(currentPath)
+                if (needsPassword) {
+                    pendingExtraction = PendingExtraction(archives, destination)
+                } else {
+                    viewModel.extractArchives(archives, destination)
+                }
+            }
+        }
+    }
+
+    /**
+     * Batch conversion of the selection (images and documents to PDF).
+     */
+    val batchConvert: () -> Unit = {
+        val files = selectedFiles.map { File(it) }
+        if (files.isEmpty()) {
+            Toast.makeText(context, "Select files to convert", Toast.LENGTH_SHORT).show()
+        } else {
+            viewModel.convertFiles(files, ConversionMode.TO_PDF)
+        }
+    }
+
 
     val uiState by viewModel.uiState.collectAsState()
 
@@ -139,11 +293,14 @@ fun FileManagerScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(TitanColors.DeepVoidGradient)) {
         // ── MATRIX RAIN BACKGROUND ──
+        // PERFORMANCE: throttled and shortened. The previous settings repainted the
+        // whole window eleven times per second on top of the scrolling list.
         MatrixRain(
             color = TitanColors.RadioactiveGreen.copy(alpha = 0.3f), // Subtler rain
-            speed = 90L,
-            trailLength = 12,
-            alpha = 0.15f,
+            columnSpacing = 34,
+            speed = 140L,
+            trailLength = 7,
+            alpha = 0.12f,
             isMulticolor = SectionColorManager.isMulticolor
         )
         Scaffold(
@@ -153,9 +310,18 @@ fun FileManagerScreen(
                     SelectionToolbar(
                         selectedCount = selectedFiles.size,
                         onClear = { viewModel.clearSelection() },
-                        onDelete = { viewModel.deleteSelected() },
+                        onDelete = { viewModel.deleteWithProgress(selectedFiles.toList()) },
                         onMove = { viewModel.moveSelected() },
-                        onCopy = { viewModel.copySelected() }
+                        onCopy = { viewModel.copySelected() },
+                        onSelectAll = { viewModel.selectAll() },
+                        onExtract = { batchExtract() },
+                        onConvert = { batchConvert() },
+                        onCompress = { compressTarget = selectedFiles.toList() },
+                        onRename = { showBatchRenameDialog = true },
+                        onInvert = { viewModel.invertSelection() },
+                        onMore = {
+                            optionsForSelection = files.firstOrNull { selectedFiles.contains(it.path) }
+                        }
                     )
                 } else {
                     val pendingOp by viewModel.pendingOperation.collectAsState()
@@ -209,6 +375,11 @@ fun FileManagerScreen(
                 // BACK NAVIGATION MASTER SHIELD
                 androidx.activity.compose.BackHandler(enabled = !isSelectionMode && currentPath != android.os.Environment.getExternalStorageDirectory().absolutePath && currentPath != "/") {
                     viewModel.navigateUp()
+                }
+                // The back gesture inside the selection mode clears the marks
+                // instead of leaving the folder.
+                androidx.activity.compose.BackHandler(enabled = isSelectionMode) {
+                    viewModel.clearSelection()
                 }
                 Column(
                     modifier = Modifier
@@ -264,8 +435,11 @@ fun FileManagerScreen(
 
                     NeuralSearchBar(
                         query = searchQuery,
-                        onQueryChange = { searchQuery = it },
-                        onSearch = { /* Reactive filtering via filteredFiles */ }
+                        onQueryChange = {
+                            searchQuery = it
+                            runSearch(it)
+                        },
+                        onSearch = { runSearch(searchQuery) }
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -294,6 +468,28 @@ fun FileManagerScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    if (searchQuery.isNotEmpty()) {
+                        // GLOBAL SEARCH: the results stream in while the walk runs.
+                        SearchResultsPanel(
+                            hits = searchHits,
+                            progress = searchProgress,
+                            wholeDevice = searchWholeDevice,
+                            isSearching = isSearching,
+                            typeToken = searchTypeToken,
+                            onTypeToken = { token ->
+                                searchTypeToken = if (searchTypeToken == token) null else token
+                                runSearch(searchQuery)
+                            },
+                            sort = searchSort,
+                            onSort = { searchSort = it },
+                            onToggleScope = { viewModel.toggleSearchScope() },
+                            onCancel = { viewModel.cancelSearch() },
+                            onOpen = {
+                                searchQuery = ""
+                                viewModel.openPath(it)
+                            }
+                        )
+                    } else {
                     when (uiState) {
                         is FileManagerUiState.Loading -> {
                             Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -329,11 +525,14 @@ fun FileManagerScreen(
                                             RadarScanningPlaceholder("NO DATA NODES DETECTED")
                                         }
                                     } else {
-                                        LazyColumn(
-                                            modifier = Modifier.weight(1f).fillMaxWidth(),
-                                            contentPadding = PaddingValues(bottom = 100.dp)
-                                        ) {
-                                            item { TacticalHeaderRow() }
+                                        val listState = rememberLazyListState()
+                                        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                            LazyColumn(
+                                                state = listState,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                contentPadding = PaddingValues(bottom = 100.dp)
+                                            ) {
+                                                item { TacticalHeaderRow() }
                                             items(
                                                 count = filteredFiles.size,
                                                 key = { index -> filteredFiles[index].path }
@@ -350,8 +549,14 @@ fun FileManagerScreen(
                                                         else viewModel.openFile(file)
                                                     },
                                                     onLongClick = {
-                                                        if (isSelectionMode) viewModel.toggleSelection(file.path)
-                                                        else showOptions = true
+                                                        // A long press enters the selection mode and
+                                                        // marks the item; from here a short press
+                                                        // marks the rest.
+                                                        if (isSelectionMode) {
+                                                            viewModel.toggleSelection(file.path)
+                                                        } else {
+                                                            viewModel.beginSelection(file.path)
+                                                        }
                                                     }
                                                 )
                                                 if (showOptions) {
@@ -363,12 +568,29 @@ fun FileManagerScreen(
                                                             if (action == "DETAILS") {
                                                                 fileForDetails = file
                                                             } else {
-                                                                handleFileAction(action, file, viewModel, scope, currentPath) { f -> fileToRename = f }
+                                                                handleFileAction(
+                                                                    action = action,
+                                                                    file = file,
+                                                                    viewModel = viewModel,
+                                                                    scope = scope,
+                                                                    currentPath = currentPath,
+                                                                    onRenameRequest = { f -> fileToRename = f },
+                                                                    onExtract = { source -> requestExtraction(source) },
+                                                                    onConvert = { source, mode -> requestConversion(source, mode) },
+                                                                    onVerify = { source -> requestVerification(source) },
+                                                                    onCompress = { source -> compressTarget = listOf(source.absolutePath) },
+                                                                    onDelete = { source -> viewModel.deleteWithProgress(listOf(source.absolutePath)) }
+                                                                )
                                                             }
                                                         }
                                                     )
                                                 }
                                             }
+                                            }
+                                            com.elysium.vanguard.ui.components.SovereignScrollbar(
+                                                state = listState,
+                                                modifier = Modifier.align(Alignment.CenterEnd)
+                                            )
                                         }
                                     }
                                 } else {
@@ -401,8 +623,14 @@ fun FileManagerScreen(
                                                         else viewModel.openFile(file)
                                                     },
                                                     onLongClick = {
-                                                        if (isSelectionMode) viewModel.toggleSelection(file.path)
-                                                        else showOptions = true
+                                                        // A long press enters the selection mode and
+                                                        // marks the item; from here a short press
+                                                        // marks the rest.
+                                                        if (isSelectionMode) {
+                                                            viewModel.toggleSelection(file.path)
+                                                        } else {
+                                                            viewModel.beginSelection(file.path)
+                                                        }
                                                     }
                                                 )
                                                 if (showOptions) {
@@ -414,7 +642,19 @@ fun FileManagerScreen(
                                                             if (action == "DETAILS") {
                                                                 fileForDetails = file
                                                             } else {
-                                                                handleFileAction(action, file, viewModel, scope, currentPath) { f -> fileToRename = f }
+                                                                handleFileAction(
+                                                                    action = action,
+                                                                    file = file,
+                                                                    viewModel = viewModel,
+                                                                    scope = scope,
+                                                                    currentPath = currentPath,
+                                                                    onRenameRequest = { f -> fileToRename = f },
+                                                                    onExtract = { source -> requestExtraction(source) },
+                                                                    onConvert = { source, mode -> requestConversion(source, mode) },
+                                                                    onVerify = { source -> requestVerification(source) },
+                                                                    onCompress = { source -> compressTarget = listOf(source.absolutePath) },
+                                                                    onDelete = { source -> viewModel.deleteWithProgress(listOf(source.absolutePath)) }
+                                                                )
                                                             }
                                                         }
                                                     )
@@ -426,6 +666,7 @@ fun FileManagerScreen(
                             }
                         }
                     }
+                        }
                 }
             }
 
@@ -441,10 +682,146 @@ fun FileManagerScreen(
                 )
             }
 
+            // OPTIONS for the marked item, reachable from the selection toolbar.
+            optionsForSelection?.let { target ->
+                SovereignOptionsDialog(
+                    file = target,
+                    onDismiss = { optionsForSelection = null },
+                    onAction = { action ->
+                        optionsForSelection = null
+                        if (action == "DETAILS") {
+                            fileForDetails = target
+                        } else {
+                            handleFileAction(
+                                action = action,
+                                file = target,
+                                viewModel = viewModel,
+                                scope = scope,
+                                currentPath = currentPath,
+                                onRenameRequest = { f -> fileToRename = f },
+                                onExtract = { source -> requestExtraction(source) },
+                                onConvert = { source, mode -> requestConversion(source, mode) },
+                                onVerify = { source -> requestVerification(source) },
+                                onCompress = { source -> compressTarget = listOf(source.absolutePath) },
+                                onDelete = { source -> viewModel.deleteWithProgress(listOf(source.absolutePath)) }
+                            )
+                        }
+                    }
+                )
+            }
+
             if (fileForDetails != null) {
                 FileDetailsDialog(
                     file = fileForDetails!!,
                     onDismiss = { fileForDetails = null }
+                )
+            }
+
+            // DELETION PROGRESS
+            val deletionState by viewModel.deletionProgress.collectAsState()
+            deletionState?.let { state ->
+                DeletionProgressDialog(state = state, onDismiss = { viewModel.dismissDeletionProgress() })
+            }
+
+            // COPY / MOVE PROGRESS
+            val transferState by viewModel.transferProgress.collectAsState()
+            transferState?.let { state ->
+                TransferProgressDialog(state = state, onDismiss = { viewModel.dismissTransferProgress() })
+            }
+
+            // COMPRESSION FORMAT PICKER
+            if (compressTarget != null) {
+                CompressFormatDialog(
+                    fileCount = compressTarget!!.size,
+                    onPick = { format ->
+                        val files = compressTarget!!.map { File(it) }
+                        compressTarget = null
+                        val base = files.firstOrNull()?.nameWithoutExtension ?: "archive"
+                        val output = File(currentPath, format.outputNameFor(base))
+                        if (format.supportsPassword) {
+                            pendingPasswordCompress = PendingPasswordCompress(files, output, format)
+                        } else {
+                            viewModel.compressFiles(files, output, format, null)
+                        }
+                    },
+                    onDismiss = { compressTarget = null }
+                )
+            }
+
+            // PASSWORD for the encrypted compression formats
+            pendingPasswordCompress?.let { request ->
+                PasswordDialog(
+                    title = "ENCRYPT ARCHIVE",
+                    message = "${request.format.displayName} can be encrypted with a password. " +
+                        "Leave it empty to compress without encryption.",
+                    allowEmpty = true,
+                    onDismiss = { pendingPasswordCompress = null },
+                    onConfirm = { password ->
+                        viewModel.compressFiles(
+                            request.files,
+                            request.output,
+                            request.format,
+                            password.ifBlank { null }
+                        )
+                        pendingPasswordCompress = null
+                    }
+                )
+            }
+
+            // PASSWORD PROMPT for encrypted archives.
+            pendingExtraction?.let { request ->
+                PasswordDialog(
+                    title = "PASSWORD REQUIRED",
+                    message = "This archive is encrypted. Enter the password to extract it.",
+                    onDismiss = { pendingExtraction = null },
+                    onConfirm = { password ->
+                        viewModel.extractArchives(request.files, request.destination, password)
+                        pendingExtraction = null
+                    }
+                )
+            }
+
+            // STORAGE WARNING raised by the extraction pre-flight check.
+            spaceWarning?.let { warning ->
+                AlertDialog(
+                    onDismissRequest = { spaceWarning = null },
+                    containerColor = TitanColors.AbsoluteBlack,
+                    title = {
+                        Text(
+                            "NOT ENOUGH SPACE",
+                            color = TitanColors.NeonRed,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 15.sp
+                        )
+                    },
+                    text = {
+                        Text(
+                            warning,
+                            color = Color.White.copy(alpha = 0.8f),
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { spaceWarning = null }) {
+                            Text("UNDERSTOOD", color = TitanColors.NeonCyan, fontSize = 12.sp)
+                        }
+                    }
+                )
+            }
+
+            // BATCH RENAME of the current selection.
+            if (showBatchRenameDialog) {
+                BatchRenameDialog(
+                    selectedCount = selectedFiles.size,
+                    onPreview = { pattern -> viewModel.previewBatchRename(pattern) },
+                    onExecute = { pattern ->
+                        val result = viewModel.batchRename(pattern)
+                        viewModel.clearSelection()
+                        showBatchRenameDialog = false
+                        result
+                    },
+                    onDismiss = { showBatchRenameDialog = false }
                 )
             }
 
@@ -461,10 +838,44 @@ fun FileManagerScreen(
                 )
             }
 
+            // UNIVERSAL EXTRACTION progress.
+            val extractionState by viewModel.extractionProgress.collectAsState()
+            if (extractionState != null) {
+                AdvancedProgressDialog(
+                    state = extractionState!!,
+                    keepScreenOn = keepScreenOn,
+                    onKeepScreenOnChange = { viewModel.setKeepScreenOn(it) },
+                    onCancel = { viewModel.cancelExtraction() },
+                    onBackground = { viewModel.dismissExtractionDialog() },
+                    title = "QUANTUM EXTRACTION"
+                )
+            }
+
+            // CONVERSION result feedback.
+            val operationMessage by viewModel.operationMessage.collectAsState()
+            if (operationMessage != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 96.dp, start = 24.dp, end = 24.dp)
+                        .neonGlass(cornerRadius = 16.dp, glowColor = TitanColors.NeonCyan)
+                        .padding(horizontal = 20.dp, vertical = 14.dp)
+                ) {
+                    Text(
+                        text = operationMessage!!,
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+
             if (showColorDialog) {
                 ColorSelectionDialog(
                     sectionName = "FILEMANAGER",
-                    onColorSelected = { SectionColorManager.fileAccent = it },
+                    onColorSelected = { color, applyToAll ->
+                        SectionColorManager.updateAccent(SectionColorManager.SECTION_FILEMANAGER, color, applyToAll)
+                    },
                     onDismiss = { showColorDialog = false }
                 )
             }
@@ -528,15 +939,36 @@ fun StorageMetricsBar(stats: StorageStats) {
             trackColor = Color.White.copy(alpha = 0.1f)
         )
         Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            "${stats.usedLabel} USED OF ${stats.totalLabel}",
-            color = Color.White.copy(alpha = 0.5f),
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "${stats.usedLabel} USED OF ${stats.totalLabel}",
+                color = Color.White.copy(alpha = 0.5f),
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace
+            )
+            // FREE SPACE: the amount still available, in GB, or in MB when it is less.
+            Text(
+                text = formatFreeSpace(stats.availableBytes),
+                color = if (stats.percentUsed > 90) TitanColors.NeonRed else TitanColors.RadioactiveGreen,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+        }
     }
 }
 }
+
+/**
+ * Formats the free space the way the user asked: whole gigabytes, and megabytes
+ * when there is not a full gigabyte left.
+ */
+private fun formatFreeSpace(bytes: Long): String =
+    com.elysium.vanguard.core.util.StorageMetrics.formatFreeSpace(bytes)
 
 @Composable
 fun SelectionToolbar(
@@ -544,46 +976,103 @@ fun SelectionToolbar(
     onClear: () -> Unit,
     onDelete: () -> Unit,
     onMove: () -> Unit,
-    onCopy: () -> Unit
+    onCopy: () -> Unit,
+    onSelectAll: () -> Unit = {},
+    onExtract: () -> Unit = {},
+    onConvert: () -> Unit = {},
+    onCompress: () -> Unit = {},
+    onRename: () -> Unit = {},
+    onInvert: () -> Unit = {},
+    onMore: () -> Unit = {}
 ) {
     val accentColor = SectionColorManager.fileAccent
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(90.dp)
             .background(TitanColors.AbsoluteBlack)
-            .padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 12.dp, vertical = 8.dp)
     ) {
-        IconButton(onClick = onClear) {
-            Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.White)
-        }
-        Spacer(modifier = Modifier.width(8.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                "$selectedCount ITEMS ARMED",
-                color = TitanColors.NeonRed,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.ExtraBold,
-                fontFamily = FontFamily.Monospace
-            )
-            Text(
-                "BATCH PROTOCOL ACTIVE",
-                color = Color.White.copy(alpha = 0.5f),
-                fontSize = 10.sp,
-                fontFamily = FontFamily.Monospace
-            )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onClear) {
+                Icon(Icons.Default.Close, contentDescription = "Clear", tint = Color.White)
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    if (selectedCount == 1) "1 ITEM ARMED" else "$selectedCount ITEMS ARMED",
+                    color = TitanColors.NeonRed,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    "BATCH PROTOCOL ACTIVE",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
+            IconButton(onClick = onSelectAll) {
+                Icon(Icons.Default.SelectAll, contentDescription = "Select all", tint = accentColor)
+            }
+            IconButton(onClick = onCopy) {
+                Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = accentColor)
+            }
+            IconButton(onClick = onMove) {
+                Icon(Icons.Default.DriveFileMove, contentDescription = "Move", tint = accentColor)
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = TitanColors.NeonRed)
+            }
         }
 
-        IconButton(onClick = onCopy) {
-            Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = accentColor)
+        // BATCH ACTION STRIP: extraction and conversion for the whole selection.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            BatchActionChip(Icons.Default.FolderOpen, "EXTRACT", TitanColors.RadioactiveGreen, onExtract)
+            BatchActionChip(Icons.Default.PictureAsPdf, "TO PDF", TitanColors.NeonRed, onConvert)
+            BatchActionChip(Icons.Default.Archive, "COMPRESS", TitanColors.NeonCyan, onCompress)
+            BatchActionChip(Icons.Default.Edit, "RENAME", TitanColors.QuantumPink, onRename)
+            BatchActionChip(Icons.Default.SwapHoriz, "INVERT", TitanColors.NeonYellow, onInvert)
+            BatchActionChip(Icons.Default.MoreVert, "MÁS", Color.White, onMore)
         }
-        IconButton(onClick = onMove) {
-            Icon(Icons.Default.DriveFileMove, contentDescription = "Move", tint = accentColor)
-        }
-        IconButton(onClick = onDelete) {
-            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = TitanColors.NeonRed)
-        }
+    }
+}
+
+@Composable
+private fun BatchActionChip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    color: Color,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(color.copy(alpha = 0.12f))
+            .border(1.dp, color.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
+            .clickable { onClick() }
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, tint = color, modifier = Modifier.size(16.dp))
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = label,
+            color = color,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace
+        )
     }
 }
 
@@ -647,6 +1136,7 @@ private fun ShortcutsQuickAccess(
                 "music" -> Icons.Default.MusicNote
                 "pictures" -> Icons.Default.Image
                 "downloads" -> Icons.Default.Download
+                "videos" -> Icons.Default.Movie
                 "dcim" -> Icons.Default.CameraAlt
                 else -> Icons.Default.Folder
             }
@@ -919,6 +1409,13 @@ private fun StorageCategoryRow(
             onClick = { onPathClick("/storage/emulated/0/Download") }
         )
 
+        // NEW SHORTCUT: the videos folder that lives inside Downloads.
+        StorageChip(
+            title = "Videos",
+            icon = Icons.Default.Movie,
+            onClick = { onPathClick("/storage/emulated/0/Download/videos") }
+        )
+
         StorageChip(
             title = "Termux",
             icon = Icons.Default.Terminal,
@@ -1075,8 +1572,14 @@ fun SovereignOptionsDialog(
 ) {
     val ext = file.name.substringAfterLast(".", "").lowercase()
     val isImage = ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "heif", "heic")
-    val isDocument = ext in listOf("doc", "docx", "txt", "rtf", "csv", "html", "htm", "epub", "mobi")
-    val isZip = ext == "zip"
+    val isDocument = ext in listOf("doc", "docx", "txt", "rtf", "csv", "html", "htm", "epub", "mobi", "md", "json", "xml")
+    val isPdf = ext == "pdf"
+
+    // Archive detection reads the container signature, not just the extension.
+    val isArchive = remember(file.path) {
+        runCatching { com.elysium.vanguard.core.archive.ArchiveEngine.isArchive(File(file.path)) }
+            .getOrDefault(false)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1094,19 +1597,26 @@ fun SovereignOptionsDialog(
                 Text(text = file.name, color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Convert to PDF: show for images, docs, and text files
+                // Universal extraction: every archive layout the engine supports.
+                if (isArchive) {
+                    OptionItem(Icons.Default.FolderOpen, "Extract Here", TitanColors.RadioactiveGreen) { onAction("EXTRACT") }
+                    OptionItem(Icons.Default.Verified, "Verify Integrity", TitanColors.NeonCyan) { onAction("VERIFY") }
+                }
+
+                // Image and document conversions.
                 if (isImage || isDocument) {
                     OptionItem(Icons.Default.Description, "Convert to PDF", TitanColors.NeonRed) { onAction("PDF") }
                 }
 
-                // Decompress: show for ZIP files
-                if (isZip) {
-                    OptionItem(Icons.Default.FolderOpen, "Decompress ZIP", TitanColors.RadioactiveGreen) { onAction("UNZIP") }
+                // PDF conversions.
+                if (isPdf) {
+                    OptionItem(Icons.Default.Image, "Convert to Images", TitanColors.QuantumPink) { onAction("PDF_TO_IMAGES") }
+                    OptionItem(Icons.Default.EditNote, "Convert to Word", TitanColors.NeonCyan) { onAction("PDF_TO_WORD") }
                 }
 
-                // Compress: show for all non-ZIP files
-                if (!isZip) {
-                    OptionItem(Icons.Default.Archive, "Compress to ZIP", TitanColors.NeonCyan) { onAction("ZIP") }
+                // Compress: every archive layout the engine can write.
+                if (!isArchive) {
+                    OptionItem(Icons.Default.Archive, "Compress to…", TitanColors.NeonCyan) { onAction("ZIP") }
                 }
 
                 OptionItem(Icons.Default.Edit, "Rename", Color.White) { onAction("RENAME") }
@@ -1150,8 +1660,10 @@ fun AdvancedProgressDialog(
     keepScreenOn: Boolean,
     onKeepScreenOnChange: (Boolean) -> Unit,
     onCancel: () -> Unit,
-    onBackground: () -> Unit
+    onBackground: () -> Unit,
+    title: String = "QUANTUM COMPRESSION"
 ) {
+    val isError = state.status == CompressionStatus.ERROR
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1162,13 +1674,13 @@ fun AdvancedProgressDialog(
         Column(
             modifier = Modifier
                 .fillMaxWidth(0.85f)
-                .neonGlass(cornerRadius = 24.dp, glowColor = TitanColors.NeonCyan)
+                .neonGlass(cornerRadius = 24.dp, glowColor = if (isError) TitanColors.NeonRed else TitanColors.NeonCyan)
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                "QUANTUM COMPRESSION",
-                color = TitanColors.NeonCyan,
+                title,
+                color = if (isError) TitanColors.NeonRed else TitanColors.NeonCyan,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
                 fontFamily = FontFamily.Monospace
@@ -1186,6 +1698,13 @@ fun AdvancedProgressDialog(
                             size = 80.dp,
                             glowRadius = 40.dp
                         )
+                    } else if (isError) {
+                        NeonGlowIcon(
+                            icon = Icons.Default.ErrorOutline,
+                            color = TitanColors.NeonRed,
+                            size = 80.dp,
+                            glowRadius = 40.dp
+                        )
                     } else {
                         CircularProgressIndicator(
                             progress = state.percentage / 100f,
@@ -1196,8 +1715,16 @@ fun AdvancedProgressDialog(
                         )
                     }
                     Text(
-                        if (state.status == CompressionStatus.SUCCESS) "COMPLETE" else "${state.percentage}%",
-                        color = if (state.status == CompressionStatus.SUCCESS) TitanColors.RadioactiveGreen else Color.White,
+                        when {
+                            state.status == CompressionStatus.SUCCESS -> "COMPLETE"
+                            isError -> "FAILED"
+                            else -> "${state.percentage}%"
+                        },
+                        color = when {
+                            state.status == CompressionStatus.SUCCESS -> TitanColors.RadioactiveGreen
+                            isError -> TitanColors.NeonRed
+                            else -> Color.White
+                        },
                         fontSize = 28.sp,
                         fontWeight = FontWeight.ExtraBold,
                         fontFamily = FontFamily.Monospace
@@ -1278,6 +1805,283 @@ fun AdvancedProgressDialog(
     }
 }
 
+/**
+ * BATCH RENAME
+ *
+ * Renames the whole selection with a template. The plan is previewed live and
+ * conflicts are resolved before anything is written to the disk.
+ */
+@Composable
+fun BatchRenameDialog(
+    selectedCount: Int,
+    onPreview: (BatchRenameEngine.Pattern) -> BatchRenameEngine.Plan,
+    onExecute: (BatchRenameEngine.Pattern) -> String,
+    onDismiss: () -> Unit
+) {
+    var template by remember { mutableStateOf("{name}_{counter}") }
+    var padding by remember { mutableStateOf("3") }
+    var startAt by remember { mutableStateOf("1") }
+    var dateFormat by remember { mutableStateOf("yyyy-MM-dd") }
+    var uppercaseExt by remember { mutableStateOf(false) }
+    var conflict by remember {
+        mutableStateOf(BatchRenameEngine.ConflictResolution.APPEND_SUFFIX)
+    }
+    var result by remember { mutableStateOf<String?>(null) }
+
+    val pattern = BatchRenameEngine.Pattern(
+        template = template,
+        counterPadding = padding.toIntOrNull()?.coerceIn(1, 10) ?: 3,
+        startAt = startAt.toIntOrNull()?.coerceAtLeast(0) ?: 1,
+        dateFormat = dateFormat.ifBlank { "yyyy-MM-dd" },
+        uppercaseExt = uppercaseExt,
+        onConflict = conflict
+    )
+
+    val plan = remember(pattern, selectedCount) { onPreview(pattern) }
+    val accentColor = TitanColors.NeonCyan
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = TitanColors.AbsoluteBlack,
+        title = {
+            Text(
+                "BATCH RENAME · $selectedCount ITEMS",
+                color = accentColor,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 14.sp
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = template,
+                    onValueChange = { template = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("TEMPLATE") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = accentColor,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                        focusedLabelColor = accentColor,
+                        unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = accentColor
+                    )
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "{counter} {name} {ext} {date} {parent} {size}",
+                    color = Color.White.copy(alpha = 0.35f),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = padding,
+                        onValueChange = { padding = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("PAD") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accentColor,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            cursorColor = accentColor
+                        )
+                    )
+                    OutlinedTextField(
+                        value = startAt,
+                        onValueChange = { startAt = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        label = { Text("START") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = accentColor,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White,
+                            cursorColor = accentColor
+                        )
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("CONFLICT POLICY", color = Color.White.copy(alpha = 0.5f), fontSize = 10.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        "SKIP" to BatchRenameEngine.ConflictResolution.SKIP,
+                        "APPEND" to BatchRenameEngine.ConflictResolution.APPEND_SUFFIX,
+                        "ABORT" to BatchRenameEngine.ConflictResolution.ABORT
+                    ).forEach { (label, resolution) ->
+                        val selected = conflict == resolution
+                        Text(
+                            text = label,
+                            color = if (selected) accentColor else Color.White.copy(alpha = 0.4f),
+                            fontSize = 10.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selected) accentColor.copy(alpha = 0.15f) else Color.Transparent)
+                                .border(1.dp, if (selected) accentColor else Color.White.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                .clickable { conflict = resolution }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = uppercaseExt,
+                        onCheckedChange = { uppercaseExt = it },
+                        colors = CheckboxDefaults.colors(
+                            checkedColor = accentColor,
+                            uncheckedColor = Color.White.copy(alpha = 0.4f)
+                        )
+                    )
+                    Text(
+                        "UPPERCASE EXTENSION",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "PREVIEW (${plan.renames.size} will be renamed)",
+                    color = accentColor.copy(alpha = 0.8f),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                plan.renames.take(6).forEach { rename ->
+                    Text(
+                        text = "${rename.original.name}  →  ${rename.renamed.name}",
+                        color = Color.White.copy(alpha = 0.75f),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (plan.renames.size > 6) {
+                    Text(
+                        text = "+ ${plan.renames.size - 6} more...",
+                        color = Color.White.copy(alpha = 0.4f),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                if (plan.skipped.isNotEmpty()) {
+                    Text(
+                        text = "${plan.skipped.size} file(s) will be SKIPPED (conflict)",
+                        color = TitanColors.NeonYellow,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                result?.let { message ->
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = message,
+                        color = TitanColors.RadioactiveGreen,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { result = onExecute(pattern) },
+                enabled = plan.renames.isNotEmpty(),
+                colors = ButtonDefaults.buttonColors(containerColor = TitanColors.RadioactiveGreen.copy(alpha = 0.2f)),
+                border = BorderStroke(1.dp, TitanColors.RadioactiveGreen)
+            ) {
+                Text("EXECUTE", color = TitanColors.RadioactiveGreen, fontSize = 12.sp)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+            }
+        }
+    )
+}
+
+/**
+ * Password prompt for encrypted archives.
+ */
+@Composable
+fun PasswordDialog(
+    title: String,
+    message: String,
+    allowEmpty: Boolean = false,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    var password by remember { mutableStateOf("") }
+    val accentColor = TitanColors.NeonCyan
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = TitanColors.AbsoluteBlack,
+        title = {
+            Text(title, color = accentColor, fontFamily = FontFamily.Monospace, fontSize = 15.sp)
+        },
+        text = {
+            Column {
+                Text(
+                    message,
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("PASSWORD") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = accentColor,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                        focusedLabelColor = accentColor,
+                        unfocusedLabelColor = Color.White.copy(alpha = 0.5f),
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = accentColor
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(password) },
+                enabled = allowEmpty || password.isNotEmpty(),
+                colors = ButtonDefaults.buttonColors(containerColor = accentColor.copy(alpha = 0.2f)),
+                border = BorderStroke(1.dp, accentColor)
+            ) {
+                Text("EXTRACT", color = accentColor, fontSize = 12.sp)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+            }
+        }
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TacticalFileRow(
@@ -1290,7 +2094,10 @@ fun TacticalFileRow(
     val dateFormatter = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
     val dateStr = remember(file.lastModified) { dateFormatter.format(Date(file.lastModified)) }
 
-    SovereignLifeWrapper {
+    // PERFORMANCE: the "life pulse" animation is disabled for list rows.
+    // It used to spin two infinite transitions plus a 3D layer for every visible
+    // row, which is what made long directories crawl.
+    SovereignLifeWrapper(enabled = false) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1302,20 +2109,13 @@ fun TacticalFileRow(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Icon
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(file.thematicColor.copy(alpha = 0.15f), RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = com.elysium.vanguard.core.util.FileThematics.getCategoryIcon(file.category),
-                    contentDescription = null,
-                    tint = file.thematicColor,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
+            // Preview: the picture, the video frame or the category icon.
+            com.elysium.vanguard.ui.components.FileThumbnail(
+                file = File(file.path),
+                category = file.category,
+                tint = file.thematicColor,
+                size = 40.dp
+            )
 
             Spacer(modifier = Modifier.width(16.dp))
 
@@ -1342,10 +2142,22 @@ fun TacticalFileRow(
                         color = Color.White.copy(alpha = 0.5f),
                         fontSize = 11.sp
                     )
+                    // The size lives right next to the date, for files and folders.
+                    if (file.size.isNotBlank()) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "· ${file.size}",
+                            color = TitanColors.NeonCyan.copy(alpha = 0.75f),
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
-            // Size
+            // Size column (kept: the size also appears next to the date).
             Text(
                 text = file.size,
                 color = if (file.isFolder) TitanColors.NeonCyan else Color.White,
@@ -1364,42 +2176,30 @@ private fun handleFileAction(
     viewModel: FileManagerViewModel,
     scope: CoroutineScope,
     currentPath: String,
-    onRenameRequest: (TitanFile) -> Unit
+    onRenameRequest: (TitanFile) -> Unit,
+    onExtract: (File) -> Unit = {},
+    onConvert: (File, ConversionMode) -> Unit = { _, _ -> },
+    onVerify: (File) -> Unit = {},
+    onCompress: (File) -> Unit = {},
+    onDelete: (File) -> Unit = {}
 ) {
     val srcFile = File(file.path)
     when (action) {
         "RENAME" -> onRenameRequest(file)
         "DETAILS" -> { /* Handled at call site for UI state */ }
-        "DELETE" -> viewModel.deleteFile(file.path)
+        "DELETE" -> onDelete(srcFile)
         "COPY" -> viewModel.copySelected(listOf(file.path))
         "MOVE" -> viewModel.moveSelected(listOf(file.path))
         "SHARE" -> {
             // Share logic
         }
-        "PDF" -> {
-            scope.launch {
-                val outFile = File(srcFile.parent, "${srcFile.nameWithoutExtension}.pdf")
-                val ext = srcFile.extension.lowercase()
-                withContext(Dispatchers.IO) {
-                    when {
-                        ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "heif", "heic") ->
-                            ConversionEngine.imagesToPdf(listOf(srcFile), outFile)
-                        ext in listOf("doc", "docx") ->
-                            ConversionEngine.docxToPdf(srcFile, outFile)
-                        else ->
-                            ConversionEngine.fileToPdf(srcFile, outFile)
-                    }
-                }
-                viewModel.loadDirectory(currentPath)
-            }
-        }
-        "ZIP" -> {
-            val output = File(file.path + ".zip")
-            viewModel.compressFiles(listOf(File(file.path)), output)
-        }
-        "UNZIP" -> {
-            viewModel.decompressFile(srcFile, File(srcFile.parent, srcFile.nameWithoutExtension))
-        }
+        "PDF" -> onConvert(srcFile, ConversionMode.TO_PDF)
+        "PDF_TO_IMAGES" -> onConvert(srcFile, ConversionMode.TO_IMAGES)
+        "PDF_TO_WORD" -> onConvert(srcFile, ConversionMode.TO_WORD)
+        "ZIP" -> onCompress(srcFile)
+        "EXTRACT" -> onExtract(srcFile)
+        "UNZIP" -> onExtract(srcFile)
+        "VERIFY" -> onVerify(srcFile)
         "VAULT" -> { /* Secure Vault logic */ }
     }
 }
@@ -1433,7 +2233,8 @@ fun TerminalList(
             val color = if (file.isFolder) TitanColors.NeonCyan else file.thematicColor
             val prefix = if (file.isFolder) "DIR" else "FIL"
 
-            SovereignLifeWrapper {
+            // PERFORMANCE: no per-row infinite animation in the terminal list.
+            SovereignLifeWrapper(enabled = false) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1598,6 +2399,8 @@ fun TacticalHeaderRow() {
             fontFamily = FontFamily.Monospace,
             modifier = Modifier.padding(start = 8.dp)
         )
+
+
     }
 }
 
@@ -1759,4 +2562,617 @@ fun StoragePermissionOverlay(context: android.content.Context) {
             Text("AUTHORIZE ACCESS", color = Color.Black, fontWeight = FontWeight.Bold)
         }
     }
+}
+
+/**
+ * An extraction that is waiting for the archive password before it starts.
+ */
+data class PendingExtraction(
+    val files: List<File>,
+    val destination: File
+)
+
+/**
+ * A compression that is waiting for the archive password.
+ */
+data class PendingPasswordCompress(
+    val files: List<File>,
+    val output: File,
+    val format: com.elysium.vanguard.core.util.CompressionFormat
+)
+
+/**
+ * Formats a byte count for the storage pre-flight message.
+ */
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val units = arrayOf("KB", "MB", "GB", "TB")
+    var value = bytes.toDouble()
+    var index = 0
+    while (value >= 1024 && index < units.lastIndex) {
+        value /= 1024
+        index++
+    }
+    return String.format(java.util.Locale.US, "%.1f %s", value, units[index])
+}
+
+/**
+ * Search filters by file type. The token is appended to the query and understood
+ * by the filter parser.
+ */
+private val SEARCH_TYPE_FILTERS: List<Pair<String, String?>> = listOf(
+    "TODO" to null,
+    "IMÁGENES" to "type:image",
+    "VIDEO" to "type:video",
+    "AUDIO" to "type:audio",
+    "DOCS" to "type:doc",
+    "ARCHIVOS" to "type:archive",
+    "APPS" to "type:app",
+    "CÓDIGO" to "type:code"
+)
+
+/**
+ * GLOBAL SEARCH RESULTS
+ *
+ * Shows the live counters of the filesystem walk and the ranked results with
+ * the matched characters highlighted.
+ */
+@Composable
+private fun SearchResultsPanel(
+    hits: List<com.elysium.vanguard.core.search.GlobalSearchEngine.Hit>,
+    progress: com.elysium.vanguard.core.search.GlobalSearchEngine.Progress?,
+    wholeDevice: Boolean,
+    isSearching: Boolean,
+    typeToken: String?,
+    onTypeToken: (String?) -> Unit,
+    sort: SearchSort,
+    onSort: (SearchSort) -> Unit,
+    onToggleScope: () -> Unit,
+    onCancel: () -> Unit,
+    onOpen: (String) -> Unit
+) {
+    val accentColor = TitanColors.NeonCyan
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // ── STATUS BAR ──
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .neonGlass(cornerRadius = 12.dp, glowColor = accentColor.copy(alpha = 0.3f))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = when {
+                        isSearching -> "SEARCHING…"
+                        progress == null -> "SEARCH READY"
+                        else -> "${progress.hits} RESULT(S)"
+                    },
+                    color = if (isSearching) TitanColors.NeonYellow else accentColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+                Text(
+                    text = progress?.let {
+                        "${it.scannedFiles} files · ${it.scannedDirectories} folders · ${it.elapsedMs} ms"
+                    } ?: "Type to search",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+
+            // SCOPE TOGGLE
+            Text(
+                text = if (wholeDevice) "WHOLE DEVICE" else "THIS FOLDER",
+                color = if (wholeDevice) TitanColors.RadioactiveGreen else Color.White.copy(alpha = 0.6f),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (wholeDevice) TitanColors.RadioactiveGreen.copy(alpha = 0.12f) else Color.Transparent)
+                    .border(
+                        1.dp,
+                        if (wholeDevice) TitanColors.RadioactiveGreen else Color.White.copy(alpha = 0.2f),
+                        RoundedCornerShape(8.dp)
+                    )
+                    .clickable { onToggleScope() }
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
+            )
+
+            if (isSearching) {
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "CANCEL",
+                    color = TitanColors.NeonRed,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onCancel() }
+                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                )
+            }
+        }
+
+        // ── TYPE FILTERS ──
+        Spacer(modifier = Modifier.height(8.dp))
+        LazyRow(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            items(SEARCH_TYPE_FILTERS) { (label, token) ->
+                val selected = typeToken == token
+                Text(
+                    text = label,
+                    color = if (selected) TitanColors.AbsoluteBlack else Color.White.copy(alpha = 0.65f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (selected) TitanColors.RadioactiveGreen else Color.White.copy(alpha = 0.06f)
+                        )
+                        .border(
+                            1.dp,
+                            if (selected) TitanColors.RadioactiveGreen else Color.White.copy(alpha = 0.15f),
+                            RoundedCornerShape(8.dp)
+                        )
+                        .clickable { onTypeToken(token) }
+                        .padding(horizontal = 9.dp, vertical = 5.dp)
+                )
+            }
+        }
+
+        // ── SORT CONTROL ──
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "SORT",
+                color = Color.White.copy(alpha = 0.35f),
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+            listOf(
+                SearchSort.RELEVANCE to "RELEVANCIA",
+                SearchSort.RECENT to "RECIENTE",
+                SearchSort.ALPHABETICAL to "A-Z"
+            ).forEach { (option, label) ->
+                val selected = sort == option
+                Text(
+                    text = label,
+                    color = if (selected) TitanColors.AbsoluteBlack else Color.White.copy(alpha = 0.6f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (selected) TitanColors.NeonCyan else Color.White.copy(alpha = 0.05f)
+                        )
+                        .border(
+                            1.dp,
+                            if (selected) TitanColors.NeonCyan else Color.White.copy(alpha = 0.12f),
+                            RoundedCornerShape(8.dp)
+                        )
+                        .clickable { onSort(option) }
+                        .padding(horizontal = 9.dp, vertical = 5.dp)
+                )
+            }
+        }
+
+        if (isSearching) {
+            Spacer(modifier = Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { 0.5f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .height(3.dp)
+                    .clip(CircleShape),
+                color = TitanColors.NeonYellow,
+                trackColor = Color.White.copy(alpha = 0.08f)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        val ordered = remember(hits, sort) {
+            GlobalSearchEngine.sort(hits, sort)
+        }
+
+        if (ordered.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = if (isSearching) "SCANNING THE CLUSTER…" else "NO MATCHES FOUND",
+                    color = Color.White.copy(alpha = 0.4f),
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            return@Column
+        }
+
+        val resultsState = rememberLazyListState()
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+        LazyColumn(
+            state = resultsState,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            items(ordered, key = { it.file.absolutePath }) { hit ->
+                val highlighted = remember(hit.file.absolutePath, hit.matchedIndices.toList()) {
+                    buildAnnotatedString {
+                        val name = hit.file.name
+                        name.forEachIndexed { index, ch ->
+                            if (hit.matchedIndices.contains(index)) {
+                                withStyle(
+                                    androidx.compose.ui.text.SpanStyle(
+                                        color = TitanColors.NeonYellow,
+                                        fontWeight = FontWeight.Black
+                                    )
+                                ) { append(ch) }
+                            } else {
+                                append(ch)
+                            }
+                        }
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpen(hit.file.absolutePath) }
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // PREVIEW: the picture, the video frame or the category icon.
+                    com.elysium.vanguard.ui.components.FileThumbnail(
+                        file = hit.file,
+                        category = com.elysium.vanguard.core.util.FileThematics
+                            .getCategory(hit.file.name, hit.file.isDirectory),
+                        tint = accentColor,
+                        size = 44.dp
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = highlighted,
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    val parentPath = hit.relativePath
+                        .substringBeforeLast('/', "")
+                        .trimEnd('/')
+                    if (parentPath.isNotEmpty()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = parentPath,
+                            color = accentColor.copy(alpha = 0.6f),
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Text(
+                        text = android.text.format.Formatter.formatFileSize(
+                            LocalContext.current,
+                            hit.file.length()
+                        ) + " · " + java.text.SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                            .format(java.util.Date(hit.file.lastModified())),
+                        color = Color.White.copy(alpha = 0.4f),
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    }
+                }
+                HorizontalDivider(color = Color.White.copy(alpha = 0.05f))
+            }
+        }
+        com.elysium.vanguard.ui.components.SovereignScrollbar(
+            state = resultsState,
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
+        }
+    }
+}
+
+/**
+ * DELETION PROGRESS
+ *
+ * Truthful percentage with a progress bar while large trees are removed.
+ */
+@Composable
+private fun DeletionProgressDialog(
+    state: DeletionState,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = { if (state.finished) onDismiss() },
+        containerColor = TitanColors.AbsoluteBlack,
+        title = {
+            Text(
+                if (state.finished) "DELETION COMPLETE" else "DELETING…",
+                color = if (state.failed > 0) TitanColors.NeonYellow else TitanColors.NeonRed,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 15.sp
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = "${state.percentage}%",
+                        color = Color.White,
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = if (state.finished) "${state.deleted} removed" else "in progress",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    progress = { state.percentage / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(CircleShape),
+                    color = if (state.failed > 0) TitanColors.NeonYellow else TitanColors.NeonRed,
+                    trackColor = Color.White.copy(alpha = 0.08f)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = state.currentPath,
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (state.finished && state.bytesFreed > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Freed " + android.text.format.Formatter.formatFileSize(
+                            LocalContext.current,
+                            state.bytesFreed
+                        ),
+                        color = TitanColors.RadioactiveGreen,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                if (state.failed > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "${state.failed} item(s) could not be removed",
+                        color = TitanColors.NeonYellow,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (state.finished) {
+                TextButton(onClick = onDismiss) {
+                    Text("CLOSE", color = TitanColors.NeonCyan, fontSize = 12.sp)
+                }
+            }
+        }
+    )
+}
+
+/**
+ * COMPRESSION FORMAT PICKER
+ *
+ * Every archive layout the engine can write, with the formats that accept a
+ * password marked as such.
+ */
+@Composable
+private fun CompressFormatDialog(
+    fileCount: Int,
+    onPick: (com.elysium.vanguard.core.util.CompressionFormat) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val accentColor = TitanColors.NeonCyan
+    val formats = com.elysium.vanguard.core.util.CompressionFormat.entries
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = TitanColors.AbsoluteBlack,
+        title = {
+            Text(
+                "COMPRESS TO…",
+                color = accentColor,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 15.sp
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(420.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    text = "$fileCount item(s) selected",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                formats.forEach { format ->
+                    val usable = format.supportsMultipleFiles || fileCount == 1
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (usable) Color.White.copy(alpha = 0.04f) else Color.Transparent)
+                            .border(
+                                1.dp,
+                                if (usable) accentColor.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f),
+                                RoundedCornerShape(10.dp)
+                            )
+                            .clickable(enabled = usable) { onPick(format) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (format.supportsPassword) Icons.Default.Lock else Icons.Default.Archive,
+                            contentDescription = null,
+                            tint = if (usable) accentColor else Color.White.copy(alpha = 0.2f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = format.displayName,
+                                color = if (usable) Color.White else Color.White.copy(alpha = 0.3f),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                text = buildString {
+                                    append("." + format.extension)
+                                    if (format.supportsPassword) append(" · password")
+                                    if (!format.supportsMultipleFiles) append(" · single file only")
+                                },
+                                color = Color.White.copy(alpha = 0.4f),
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CANCEL", color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp)
+            }
+        }
+    )
+}
+
+/**
+ * COPY / MOVE PROGRESS
+ *
+ * Same truthful percentage and progress bar as the deletion flow.
+ */
+@Composable
+private fun TransferProgressDialog(
+    state: TransferState,
+    onDismiss: () -> Unit
+) {
+    val title = if (state.mode == TransferMode.MOVE) "MOVING…" else "COPYING…"
+    AlertDialog(
+        onDismissRequest = { if (state.finished) onDismiss() },
+        containerColor = TitanColors.AbsoluteBlack,
+        title = {
+            Text(
+                if (state.finished) "TRANSFER COMPLETE" else title,
+                color = if (state.failed > 0) TitanColors.NeonYellow else TitanColors.NeonCyan,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 15.sp
+            )
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        text = "${state.percentage}%",
+                        color = Color.White,
+                        fontSize = 30.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = if (state.finished) "${state.moved} transferred" else "in progress",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    progress = { state.percentage / 100f },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(8.dp)
+                        .clip(CircleShape),
+                    color = if (state.failed > 0) TitanColors.NeonYellow else TitanColors.NeonCyan,
+                    trackColor = Color.White.copy(alpha = 0.08f)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = state.currentPath,
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (state.finished && state.bytesTransferred > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Transferred " + android.text.format.Formatter.formatFileSize(
+                            LocalContext.current,
+                            state.bytesTransferred
+                        ),
+                        color = TitanColors.RadioactiveGreen,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+                if (state.failed > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "${state.failed} item(s) could not be transferred",
+                        color = TitanColors.NeonYellow,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (state.finished) {
+                TextButton(onClick = onDismiss) {
+                    Text("CLOSE", color = TitanColors.NeonCyan, fontSize = 12.sp)
+                }
+            }
+        }
+    )
 }

@@ -117,8 +117,8 @@ fun UsbCConnectionScreen(
 
     var activeMode by remember { mutableStateOf(UsbControlMode.KEYBOARD_DESK) }
     var scaleMode by remember { mutableStateOf(UsbScreenScaleMode.FILL_100) }
-    var connectionAttempted by remember { mutableStateOf(false) }
-    var latencyMs by remember { mutableFloatStateOf(0.111f) }
+    var connectionAttempt by remember { mutableIntStateOf(0) }
+    var pinText by remember { mutableStateOf("") }
     var eventCount by remember { mutableIntStateOf(0) }
     var showChromeOverlay by remember { mutableStateOf(true) }
 
@@ -144,57 +144,11 @@ fun UsbCConnectionScreen(
         }
     }
 
-    // Pure 100% Wired USB-C Cable Transmission Loop (127.0.0.1:7878 ADB Reverse)
-    LaunchedEffect(isConnected) {
-        if (!isConnected) {
-            var attemptCount = 0
-            while (isActive) {
-                attemptCount++
-                Log.i(TAG, "USB-C Wired Cable Transmission: Connecting to 127.0.0.1:7878 (attempt #$attemptCount)...")
-                var success = false
-                withContext(Dispatchers.IO) {
-                    try {
-                        val usbHost = DiscoveredHost(
-                            name = "USB-C Cable",
-                            host = "127.0.0.1",
-                            port = 7878,
-                            model = "Mac",
-                            osVersion = "macOS",
-                            publicKeyB64 = null
-                        )
-                        val result = transport.startHandshake(usbHost)
-                        if (result is MacConnectionState.AwaitingPin) {
-                            transport.sendPin("000000")
-                        }
-                        if (transport.state.value is MacConnectionState.Ready ||
-                            transport.state.value is MacConnectionState.ReadyEvent) {
-                            success = true
-                        }
-                    } catch (e: Throwable) {
-                        Log.d(TAG, "USB-C wired cable socket polling: ${e.message}")
-                    }
-                }
-                if (success || transport.state.value is MacConnectionState.Ready ||
-                    transport.state.value is MacConnectionState.ReadyEvent) {
-                    Log.i(TAG, "USB-C Wired Cable Transmission: READY and STREAMING!")
-                    break
-                }
-                delay(500)
-            }
-        }
-    }
-
-    // Latency telemetry
-    LaunchedEffect(connectionState) {
-        if (connectionState is MacConnectionState.Ready ||
-            connectionState is MacConnectionState.ReadyEvent ||
-            connectionState is MacConnectionState.AwaitingPin
-        ) {
-            while (true) {
-                delay(2000)
-                latencyMs = (0.08f + (Math.random() * 0.12f).toFloat())
-            }
-        }
+    // USB-C requires the Mac app to install `adb reverse` after USB debugging is
+    // authorized. This probe runs once; localhost is never treated as the Mac by default.
+    LaunchedEffect(connectionAttempt) {
+        val usbHost = DiscoveredHost("USB-C · puente ADB", "127.0.0.1", 7878, "Mac", "macOS", null)
+        withContext(Dispatchers.IO) { transport.startHandshake(usbHost) }
     }
 
 
@@ -380,7 +334,7 @@ fun UsbCConnectionScreen(
                                         .background(if (isConnected) ElysiumColors.NeonGreen else ElysiumColors.NeonYellow)
                                 )
                                 Text(
-                                    text = if (isConnected) "${"%.3f".format(latencyMs)}ms"
+                                    text = if (isConnected) "ENLACE REAL"
                                     else if (isConnecting) "conectando..."
                                     else if (hasError) "error"
                                     else "—",
@@ -552,6 +506,41 @@ fun UsbCConnectionScreen(
             }
         }
     }
+
+    if (connectionState is MacConnectionState.AwaitingPin) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Confirmar Mac") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Escribe el código de 6 dígitos que muestra Elysium Vanguard en el Mac.")
+                    OutlinedTextField(
+                        value = pinText,
+                        onValueChange = { pinText = it.filter(Char::isDigit).take(6) },
+                        label = { Text("Código de emparejamiento") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = pinText.length == 6, onClick = {
+                    val pin = pinText
+                    pinText = ""
+                    scope.launch { withContext(Dispatchers.IO) { transport.sendPin(pin) } }
+                }) { Text("Conectar") }
+            },
+            dismissButton = { TextButton(onClick = onFallbackToWifi) { Text("Usar Wi‑Fi") } }
+        )
+    } else if (hasError && !isConnected) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 84.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            TextButton(onClick = { connectionAttempt++ }) { Text("Reintentar USB-C") }
+            TextButton(onClick = onFallbackToWifi) { Text("Cambiar a Wi‑Fi") }
+        }
+    }
 }
 
 // =================================================================
@@ -574,6 +563,16 @@ fun UsbDisplaySurfaceComplete(
     val scope = rememberCoroutineScope()
     var frameBitmap by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
+    var captureStatus by remember { mutableStateOf<MacProtocol.ScreenShareStatus?>(null) }
+
+    // Preserve the latest status so the permission/error explanation is visible
+    // even when the Mac responds immediately after SCREEN_REQUEST.
+    LaunchedEffect(transport) {
+        transport.screenStatus.collect { status ->
+            captureStatus = status
+            Log.i(TAG, "UsbDisplaySurfaceComplete: Mac capture status=${status.name}")
+        }
+    }
 
     // Always request screen capture when this composable is active AND connected.
     // Using Unit key ensures it fires on first composition; onDispose stops it.
@@ -777,7 +776,8 @@ fun UsbDisplaySurfaceComplete(
                     modifier = Modifier.size(40.dp)
                 )
                 Text(
-                    text = if (isConnected) "Cargando Pantalla Mac 100% a 30 FPS..."
+                    text = captureStatus?.userMessage
+                        ?: if (isConnected) "Cargando Pantalla Mac 100% a 30 FPS..."
                     else "Conecta por USB para ver la pantalla completa del Mac",
                     style = TextStyle(fontSize = 13.sp, color = ElysiumColors.OnSurfaceVariant),
                 )

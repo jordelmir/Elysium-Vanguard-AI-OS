@@ -61,6 +61,41 @@ class MacCryptoTest {
     }
 
     @Test
+    fun `encrypted Mac JPEG screen frame is authenticated and decoded`() {
+        val alice = MacCrypto.generateKeyPair()
+        val bob = MacCrypto.generateKeyPair()
+        val channel = MacCrypto.deriveChannelKey(alice, bob.publicKeyBytes)
+        val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02, 0xFF.toByte(), 0xD9.toByte())
+
+        assertArrayEquals(jpeg, MacProtocol.decryptScreenJpeg(channel.encrypt(jpeg), channel))
+    }
+
+    @Test
+    fun `tampered or non JPEG Mac screen frame is discarded`() {
+        val alice = MacCrypto.generateKeyPair()
+        val bob = MacCrypto.generateKeyPair()
+        val channel = MacCrypto.deriveChannelKey(alice, bob.publicKeyBytes)
+        val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02, 0xFF.toByte(), 0xD9.toByte())
+        val tampered = channel.encrypt(jpeg).also { it[it.lastIndex] = (it.last().toInt() xor 1).toByte() }
+
+        assertEquals(null, MacProtocol.decryptScreenJpeg(tampered, channel))
+        assertEquals(null, MacProtocol.decryptScreenJpeg(channel.encrypt("not jpeg".toByteArray()), channel))
+    }
+
+    @Test
+    fun `authenticated JPEG permits and trims a short encoder trailer`() {
+        val jpeg = byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02,
+            0xFF.toByte(), 0xD9.toByte(), 0x00, 0x00
+        )
+
+        assertArrayEquals(
+            jpeg.copyOfRange(0, 6),
+            MacProtocol.validateScreenJpeg(jpeg)
+        )
+    }
+
+    @Test
     fun `each encrypt uses a fresh nonce`() {
         val alice = MacCrypto.generateKeyPair()
         val bob = MacCrypto.generateKeyPair()

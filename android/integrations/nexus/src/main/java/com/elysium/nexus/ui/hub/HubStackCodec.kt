@@ -43,6 +43,7 @@ object HubStackCodec {
         HubDestination.AutomationList -> "al"
         HubDestination.SceneList -> "sl"
         HubDestination.MacDiscovery -> "macd"
+        HubDestination.MacInternet -> "macnet"
         // Live objects — degrade by omission.
         is HubDestination.MacPairing -> null
         is HubDestination.MacControl -> null
@@ -81,6 +82,7 @@ object HubStackCodec {
             "al" -> HubDestination.AutomationList
             "sl" -> HubDestination.SceneList
             "macd" -> HubDestination.MacDiscovery
+            "macnet" -> HubDestination.MacInternet
             else -> null
         }
     }

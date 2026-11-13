@@ -55,6 +55,7 @@ import com.elysium.vanguard.ui.theme.premiumGlass
 import com.elysium.vanguard.ui.theme.SectionColorManager
 import com.elysium.vanguard.ui.components.ColorCustomizerIcon
 import com.elysium.vanguard.ui.components.ColorSelectionDialog
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 @Composable
@@ -68,16 +69,25 @@ fun DashboardScreen(
     val accentColor = SectionColorManager.dashboardAccent
 
     // ── LIVE DEVICE METRICS ──
-    val storageInfo = remember { getStorageInfo() }
+    // The storage is read live so the dashboard always shows the real numbers.
+    var storageInfo by remember { mutableStateOf(getStorageInfo(context)) }
     val ramInfo = remember { getRamInfo(context) }
     val batteryLevel = remember { getBatteryLevel(context) }
 
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(4000)
+            storageInfo = getStorageInfo(context)
+        }
+    }
+
     val portalItems = listOf(
-        PortalItem("FILE SYSTEM", "MANAGE · COMPRESS · EXPLORE", Icons.Default.Storage, TitanColors.NeonCyan, onNavigateToStorage,
+        // RENAME: "Administrador de archivos" -> "File Manager"
+        PortalItem("File Manager", "MANAGE · EXTRACT · CONVERT · EXPLORE", Icons.Default.Storage, TitanColors.NeonCyan, onNavigateToStorage,
             Brush.linearGradient(listOf(TitanColors.NeonCyan.copy(alpha = 0.15f), TitanColors.ElectricBlue.copy(alpha = 0.05f)))),
-        PortalItem("MEDIA VAULT", "PHOTOS · VIDEOS · ALBUMS", Icons.Default.Image, TitanColors.QuantumPink, onNavigateToGallery,
+        PortalItem("GALERÍA", "PHOTOS · VIDEOS · ALBUMS", Icons.Default.Image, TitanColors.QuantumPink, onNavigateToGallery,
             Brush.linearGradient(listOf(TitanColors.QuantumPink.copy(alpha = 0.15f), TitanColors.PlasmaPurple.copy(alpha = 0.05f)))),
-        PortalItem("AUDIO HUB", "MUSIC · PLAYLISTS · BASS", Icons.Default.MusicNote, TitanColors.RadioactiveGreen, onNavigateToMusic,
+        PortalItem("MÚSICA", "MUSIC · PLAYLISTS · BASS", Icons.Default.MusicNote, TitanColors.RadioactiveGreen, onNavigateToMusic,
             Brush.linearGradient(listOf(TitanColors.RadioactiveGreen.copy(alpha = 0.15f), TitanColors.NeonYellow.copy(alpha = 0.05f))))
     )
 
@@ -107,7 +117,9 @@ fun DashboardScreen(
         if (showColorDialog) {
             ColorSelectionDialog(
                 sectionName = "DASHBOARD",
-                onColorSelected = { SectionColorManager.dashboardAccent = it },
+                onColorSelected = { color, applyToAll ->
+                    SectionColorManager.updateAccent(SectionColorManager.SECTION_DASHBOARD, color, applyToAll)
+                },
                 onDismiss = { showColorDialog = false }
             )
         }
@@ -171,7 +183,10 @@ fun DashboardScreen(
                                 storageInfo.usedPercent > 60 -> TitanColors.NeonOrange
                                 else -> accentColor
                             },
-                            detail = "${storageInfo.usedGb}/${storageInfo.totalGb} GB"
+                            // REAL storage, exactly the same numbers the file
+                            // manager shows inside STORAGE CENTRAL.
+                            detail = "${storageInfo.usedGb}/${storageInfo.totalGb} GB",
+                            subDetail = storageInfo.freeLabel
                         )
                         LiveMetricGauge(
                             label = "MEMORY",
@@ -276,7 +291,8 @@ private fun LiveMetricGauge(
     label: String,
     value: Int,
     color: Color,
-    detail: String
+    detail: String,
+    subDetail: String? = null
 ) {
     val animatedSweep by animateFloatAsState(
         targetValue = (value / 100f) * 270f,
@@ -316,6 +332,9 @@ private fun LiveMetricGauge(
         Spacer(modifier = Modifier.height(4.dp))
         Text(label, color = Color.White.copy(alpha = 0.5f), fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp, fontFamily = FontFamily.Monospace)
         Text(detail, color = Color.White.copy(alpha = 0.3f), fontSize = 8.sp, fontFamily = FontFamily.Monospace)
+        if (subDetail != null) {
+            Text(subDetail, color = color.copy(alpha = 0.75f), fontSize = 8.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+        }
     }
 }
 
@@ -446,21 +465,22 @@ private fun StatusChip(label: String, value: String, color: Color) {
 // DEVICE INFO HELPERS
 // ══════════════════════════════════════════════════════════════
 
-private data class StorageInfo(val totalGb: String, val usedGb: String, val usedPercent: Int)
+private data class StorageInfo(val totalGb: String, val usedGb: String, val usedPercent: Int, val freeLabel: String)
 private data class RamInfo(val totalGb: String, val usedGb: String, val usedPercent: Int)
 
-private fun getStorageInfo(): StorageInfo {
+/**
+ * REAL device storage. It reads the very same source the file manager uses, so
+ * both screens always show the same numbers, and it also reports the free
+ * space in gigabytes.
+ */
+private fun getStorageInfo(context: Context): StorageInfo {
     return try {
-        val stat = StatFs(Environment.getExternalStorageDirectory().path)
-        val totalBytes = stat.totalBytes
-        val freeBytes = stat.availableBytes
-        val usedBytes = totalBytes - freeBytes
-        val totalGb = "%.1f".format(totalBytes / 1_073_741_824.0)
-        val usedGb = "%.1f".format(usedBytes / 1_073_741_824.0)
-        val percent = ((usedBytes.toDouble() / totalBytes) * 100).roundToInt()
-        StorageInfo(totalGb, usedGb, percent)
+        val stats = com.elysium.vanguard.core.util.StorageMetrics.read(context)
+        val totalGb = "%.0f".format(stats.totalBytes / 1_000_000_000.0)
+        val usedGb = "%.0f".format(stats.usedBytes / 1_000_000_000.0)
+        StorageInfo(totalGb, usedGb, stats.percentUsed, stats.freeLabel)
     } catch (_: Exception) {
-        StorageInfo("0", "0", 0)
+        StorageInfo("0", "0", 0, "0 MB FREE")
     }
 }
 

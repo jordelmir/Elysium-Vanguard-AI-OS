@@ -18,7 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Laptop
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -114,7 +114,7 @@ fun QuickConnectCard(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
-                        text = "RECONECTAR",
+                        text = if (device is LastDevice.Mac) "BUSCAR MAC" else "RECONECTAR",
                         style = TextStyle(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
@@ -141,7 +141,7 @@ fun QuickConnectCard(
                 // second line so the user can
                 // verify the right device.
                 val detail = when (device) {
-                    is LastDevice.Mac -> "${device.host}:${device.port}"
+                    is LastDevice.Mac -> "Última IP: ${device.host}:${device.port}"
                     is LastDevice.Bluetooth -> device.address
                 }
                 Text(
@@ -182,7 +182,7 @@ fun QuickConnectCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.Refresh,
+                        imageVector = Icons.Filled.Close,
                         contentDescription = "Olvidar",
                         tint = ElysiumColors.OnSurfaceMuted.copy(alpha = 0.6f),
                         modifier = Modifier.size(14.dp)

@@ -2106,11 +2106,11 @@ fun MeetApp(
                 }
             }
             composable(MeetDestinations.RECORD_SHIELD) {
-                val context = androidx.compose.ui.platform.LocalContext.current
-                androidx.compose.runtime.LaunchedEffect(Unit) {
-                    context.startActivity(android.content.Intent(context, com.elysium.vanguard.recordshield.ui.MainActivity::class.java))
-                    navController.popBackStack()
-                }
+                // NATIVE SECTION: RecordShield is rendered inside the home
+                // navigation instead of opening a separate activity.
+                com.elysium.vanguard.recordshield.ui.RecordShieldSection(
+                    onBack = { navController.popBackStack() }
+                )
             }
             composable(MeetDestinations.SUPREME_BASS_BOOST) {
                 SupremeBassBoostScreen(onBack = { navController.popBackStack() })

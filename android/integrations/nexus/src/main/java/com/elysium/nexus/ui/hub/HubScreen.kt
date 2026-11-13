@@ -266,7 +266,7 @@ fun HubScreen(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "MAC / PC",
+                        text = "ELYSIUM VANGUARD · WI‑FI",
                             style = TextStyle(
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.ExtraBold,
@@ -276,7 +276,7 @@ fun HubScreen(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Comparte tu pantalla · trackpad + teclado + mouse",
+                        text = "Mac detectado en la misma red · emparejamiento con código",
                             style = TextStyle(
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium
@@ -293,13 +293,7 @@ fun HubScreen(
                 }
             }
 
-            // === USB-C WIRED TRANSPORT ==============================
-            // Phase ULT.9 — USB HID transport for
-            // near-zero latency (< 2ms). The phone
-            // sends raw HID reports over the USB-C
-            // bulk endpoint. A lightweight daemon
-            // on the Mac/PC receives and injects
-            // them as native events.
+            // === USB-C TRANSPORT =====================================
             NeonCard(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -332,7 +326,7 @@ fun HubScreen(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "USB-C CABLADO",
+                            text = "ELYSIUM VANGUARD · USB-C",
                             style = TextStyle(
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.ExtraBold,
@@ -342,7 +336,7 @@ fun HubScreen(
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Latencia cero · conexión directa",
+                            text = "Puente ADB Reverse · depuración USB autorizada",
                             style = TextStyle(
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium

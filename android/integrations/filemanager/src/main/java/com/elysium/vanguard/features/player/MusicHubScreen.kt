@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -44,11 +45,18 @@ import com.elysium.vanguard.ui.components.SovereignLifeWrapper
 import com.elysium.vanguard.ui.components.AnimatedEmptyState
 import com.elysium.vanguard.ui.components.EqualizerBars
 import com.elysium.vanguard.ui.components.GlassPillBadge
+import com.elysium.vanguard.ui.components.SovereignScrollbar
 import com.elysium.vanguard.ui.theme.SectionColorManager
 import com.elysium.vanguard.ui.components.ColorCustomizerIcon
 import com.elysium.vanguard.ui.components.ColorSelectionDialog
 import com.elysium.vanguard.ui.components.TitanHeader
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.filled.RemoveCircleOutline
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -67,6 +75,10 @@ fun MusicHubScreen(
 
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var trackToAddByPlaylist by remember { mutableStateOf<MusicTrack?>(null) }
+    // Track that will be added to a playlist the client is creating right now.
+    var pendingTrackForNewPlaylist by remember { mutableStateOf<MusicTrack?>(null) }
+    var playlistToRename by remember { mutableStateOf<Playlist?>(null) }
+    var playlistToDelete by remember { mutableStateOf<Playlist?>(null) }
     val selectedPlaylist by viewModel.selectedPlaylist.collectAsState()
 
     val handleBack = {
@@ -86,7 +98,9 @@ fun MusicHubScreen(
                 onBack = handleBack,
                 sectionName = "MUSIC",
                 actions = {
-                    if (pagerState.currentPage == 2 && selectedPlaylist == null) {
+                    // The create action is available in SONGS and in
+                    // PLAYLISTS: a playlist can be created from either side.
+                    if ((pagerState.currentPage == 2 || pagerState.currentPage == 3) && selectedPlaylist == null) {
                         IconButton(onClick = { showCreatePlaylistDialog = true }) {
                             Icon(Icons.Default.Add, null, tint = TitanColors.NeonCyan)
                         }
@@ -163,7 +177,10 @@ fun MusicHubScreen(
                     3 -> PlaylistsTab(
                         viewModel = viewModel,
                         selectedPlaylist = selectedPlaylist,
-                        onPlaylistClick = { viewModel.selectPlaylist(it) }
+                        onPlaylistClick = { viewModel.selectPlaylist(it) },
+                        onCreatePlaylist = { showCreatePlaylistDialog = true },
+                        onRenamePlaylist = { playlistToRename = it },
+                        onDeletePlaylist = { playlistToDelete = it }
                     )
                     4 -> FavoritesTab(viewModel, onAddToPlaylist = { trackToAddByPlaylist = it })
                 }
@@ -174,8 +191,10 @@ fun MusicHubScreen(
 
             if (showColorDialog) {
                 ColorSelectionDialog(
-                    sectionName = "MUSIC HUB",
-                    onColorSelected = { SectionColorManager.musicAccent = it },
+                    sectionName = "MUSIC",
+                    onColorSelected = { color, applyToAll ->
+                        SectionColorManager.updateAccent(SectionColorManager.SECTION_MUSIC, color, applyToAll)
+                    },
                     onDismiss = { showColorDialog = false }
                 )
             }
@@ -183,8 +202,41 @@ fun MusicHubScreen(
 
         if (showCreatePlaylistDialog) {
             CreatePlaylistDialog(
-                onDismiss = { showCreatePlaylistDialog = false },
-                onCreate = { name -> viewModel.createPlaylist(name); showCreatePlaylistDialog = false }
+                viewModel = viewModel,
+                onDismiss = { showCreatePlaylistDialog = false; pendingTrackForNewPlaylist = null },
+                onCreate = { name ->
+                    val newId = viewModel.createPlaylist(name)
+                    showCreatePlaylistDialog = false
+                    // A track that was about to be added goes into the brand
+                    // new playlist straight away.
+                    pendingTrackForNewPlaylist?.let { track ->
+                        if (newId != null) viewModel.addTrackToPlaylist(newId, track)
+                    }
+                    pendingTrackForNewPlaylist = null
+                }
+            )
+        }
+
+        if (playlistToRename != null) {
+            RenamePlaylistDialog(
+                viewModel = viewModel,
+                playlist = playlistToRename!!,
+                onDismiss = { playlistToRename = null },
+                onRename = { name ->
+                    viewModel.renamePlaylist(playlistToRename!!.id, name)
+                    playlistToRename = null
+                }
+            )
+        }
+
+        if (playlistToDelete != null) {
+            DeletePlaylistDialog(
+                playlist = playlistToDelete!!,
+                onDismiss = { playlistToDelete = null },
+                onConfirm = {
+                    viewModel.deletePlaylist(playlistToDelete!!.id)
+                    playlistToDelete = null
+                }
             )
         }
 
@@ -192,7 +244,13 @@ fun MusicHubScreen(
             AddToPlaylistDialog(
                 viewModel = viewModel,
                 onDismiss = { trackToAddByPlaylist = null },
-                onSelect = { id -> viewModel.addTrackToPlaylist(id, trackToAddByPlaylist!!); trackToAddByPlaylist = null }
+                onSelect = { id -> viewModel.addTrackToPlaylist(id, trackToAddByPlaylist!!); trackToAddByPlaylist = null },
+                onCreateNew = {
+                    // Remember the track: it lands in the new playlist.
+                    pendingTrackForNewPlaylist = trackToAddByPlaylist
+                    trackToAddByPlaylist = null
+                    showCreatePlaylistDialog = true
+                }
             )
         }
     }
@@ -212,30 +270,38 @@ private fun RecentsTab(viewModel: MusicHubViewModel, onAddToPlaylist: (MusicTrac
     if (recents.isEmpty()) {
         AnimatedEmptyState(icon = Icons.Default.History, message = "NO RECENT TRACKS", color = accentColor)
     } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            item {
-                GlassPillBadge(
-                    text = "RECENT TRACKS",
-                    color = accentColor
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-            itemsIndexed(recents) { index, track ->
-                SovereignLifeWrapper {
-                    TrackItem(
-                        index = index + 1,
-                        track = track,
-                        isCurrentlyPlaying = currentTrack?.id == track.id && isPlaying,
-                        onPlay = { viewModel.playTrack(track, recents) },
-                        onFavorite = { viewModel.toggleFavorite(track.id) },
-                        onAddToPlaylist = { onAddToPlaylist(track) }
+        val listState = rememberLazyListState()
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                item {
+                    GlassPillBadge(
+                        text = "RECENT TRACKS",
+                        color = accentColor
                     )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                itemsIndexed(recents) { index, track ->
+                    SovereignLifeWrapper {
+                        TrackItem(
+                            index = index + 1,
+                            track = track,
+                            isCurrentlyPlaying = currentTrack?.id == track.id && isPlaying,
+                            onPlay = { viewModel.playTrack(track, recents) },
+                            onFavorite = { viewModel.toggleFavorite(track.id) },
+                            onAddToPlaylist = { onAddToPlaylist(track) }
+                        )
+                    }
                 }
             }
+            SovereignScrollbar(
+                state = listState,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
         }
     }
 }
@@ -259,51 +325,59 @@ private fun SongsTab(viewModel: MusicHubViewModel, onAddToPlaylist: (MusicTrack)
     } else if (songs.isEmpty()) {
         AnimatedEmptyState(icon = Icons.Default.MusicOff, message = "NO TRACKS FOUND", color = accentColor)
     } else {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    GlassPillBadge(
-                        text = "${songs.size} TRACKS LOADED",
-                        color = accentColor
-                    )
-
-                    IconButton(
-                        onClick = { viewModel.refreshLibrary() },
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(accentColor.copy(alpha = 0.1f))
+        val listState = rememberLazyListState()
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Sync,
-                            contentDescription = "Refresh",
-                            tint = accentColor,
-                            modifier = Modifier.size(18.dp)
+                        GlassPillBadge(
+                            text = "${songs.size} TRACKS LOADED",
+                            color = accentColor
+                        )
+
+                        IconButton(
+                            onClick = { viewModel.refreshLibrary() },
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(accentColor.copy(alpha = 0.1f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Sync,
+                                contentDescription = "Refresh",
+                                tint = accentColor,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                itemsIndexed(songs) { index, track ->
+                    SovereignLifeWrapper { // Wrap for life effect
+                        TrackItem(
+                            index = index + 1,
+                            track = track,
+                            isCurrentlyPlaying = currentTrack?.id == track.id && isPlaying,
+                            onPlay = { viewModel.playTrack(track, songs) }, // Pass the full songs list as queue
+                            onFavorite = { viewModel.toggleFavorite(track.id) },
+                            onAddToPlaylist = { onAddToPlaylist(track) }
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(8.dp))
             }
-            itemsIndexed(songs) { index, track ->
-                SovereignLifeWrapper { // Wrap for life effect
-                    TrackItem(
-                        index = index + 1,
-                        track = track,
-                        isCurrentlyPlaying = currentTrack?.id == track.id && isPlaying,
-                        onPlay = { viewModel.playTrack(track, songs) }, // Pass the full songs list as queue
-                        onFavorite = { viewModel.toggleFavorite(track.id) },
-                        onAddToPlaylist = { onAddToPlaylist(track) }
-                    )
-                }
-            }
+            SovereignScrollbar(
+                state = listState,
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
         }
     }
 }
@@ -320,7 +394,8 @@ private fun TrackItem(
     isCurrentlyPlaying: Boolean = false,
     onPlay: () -> Unit,
     onFavorite: () -> Unit,
-    onAddToPlaylist: () -> Unit
+    onAddToPlaylist: () -> Unit,
+    onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val accentColor = if (isCurrentlyPlaying) TitanColors.NeonCyan else TitanColors.QuantumPink
@@ -423,7 +498,10 @@ private fun TrackItem(
         TrackOptionsDialog(
             track = track,
             onDismiss = { showMenu = false },
-            onAddToPlaylist = { showMenu = false; onAddToPlaylist() }
+            onAddToPlaylist = { showMenu = false; onAddToPlaylist() },
+            onRemoveFromPlaylist = onRemoveFromPlaylist?.let { action ->
+                { showMenu = false; action() }
+            }
         )
     }
 }
@@ -436,7 +514,10 @@ private fun TrackItem(
 private fun PlaylistsTab(
     viewModel: MusicHubViewModel,
     selectedPlaylist: Playlist?,
-    onPlaylistClick: (Playlist) -> Unit
+    onPlaylistClick: (Playlist) -> Unit,
+    onCreatePlaylist: () -> Unit,
+    onRenamePlaylist: (Playlist) -> Unit,
+    onDeletePlaylist: (Playlist) -> Unit
 ) {
     if (selectedPlaylist != null) {
         PlaylistDetailView(viewModel = viewModel, playlist = selectedPlaylist)
@@ -444,22 +525,86 @@ private fun PlaylistsTab(
         val playlists by viewModel.playlists.collectAsState()
 
         if (playlists.isEmpty()) {
-            AnimatedEmptyState(icon = Icons.Default.PlaylistAdd, message = "NO PLAYLISTS YET", color = TitanColors.RadioactiveGreen)
-        } else {
-            LazyColumn(
+            // EMPTY STATE WITH THE CALL TO ACTION: the client can create the
+            // first playlist right here, without hunting for a hidden button.
+            Column(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                items(playlists) { playlist ->
-                    PlaylistItem(
-                        playlist = playlist,
-                        onClick = { onPlaylistClick(playlist) },
-                        onDelete = { viewModel.deletePlaylist(playlist.id) }
-                    )
+                AnimatedEmptyState(
+                    icon = Icons.Default.PlaylistAdd,
+                    message = "NO PLAYLISTS YET",
+                    color = TitanColors.RadioactiveGreen
+                )
+                Spacer(modifier = Modifier.height(20.dp))
+                NewPlaylistButton(onClick = onCreatePlaylist)
+            }
+        } else {
+            val listState = rememberLazyListState()
+            Box(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            NewPlaylistButton(onClick = onCreatePlaylist)
+                            GlassPillBadge(
+                                text = "${playlists.size} LISTAS",
+                                color = TitanColors.RadioactiveGreen
+                            )
+                        }
+                    }
+                    items(playlists) { playlist ->
+                        PlaylistItem(
+                            playlist = playlist,
+                            onClick = { onPlaylistClick(playlist) },
+                            onDelete = { onDeletePlaylist(playlist) },
+                            onRename = { onRenamePlaylist(playlist) }
+                        )
+                    }
                 }
+                SovereignScrollbar(
+                    state = listState,
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                )
             }
         }
+    }
+}
+
+/**
+ * The action that creates a new playlist. It is shown in the PLAYLISTS tab,
+ * in the empty state and while a track is being added to a playlist.
+ */
+@Composable
+private fun NewPlaylistButton(onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(containerColor = TitanColors.RadioactiveGreen.copy(alpha = 0.2f)),
+        border = BorderStroke(1.dp, TitanColors.RadioactiveGreen)
+    ) {
+        Icon(
+            Icons.Default.Add,
+            contentDescription = null,
+            tint = TitanColors.RadioactiveGreen,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            "NUEVA LISTA",
+            color = TitanColors.RadioactiveGreen,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp
+        )
     }
 }
 
@@ -468,44 +613,59 @@ private fun PlaylistDetailView(viewModel: MusicHubViewModel, playlist: Playlist)
     val currentTrack by viewModel.currentTrack.collectAsState()
     val isPlaying by viewModel.isPlaying.collectAsState()
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        if (playlist.tracks.isEmpty()) {
-            item {
-                AnimatedEmptyState(
-                    icon = Icons.Default.MusicOff,
-                    message = "NO TRACKS IN PLAYLIST",
-                    color = TitanColors.RadioactiveGreen,
-                    modifier = Modifier.height(300.dp)
+    val listState = rememberLazyListState()
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (playlist.tracks.isEmpty()) {
+                item {
+                    AnimatedEmptyState(
+                        icon = Icons.Default.MusicOff,
+                        message = "NO TRACKS IN PLAYLIST",
+                        color = TitanColors.RadioactiveGreen,
+                        modifier = Modifier.height(300.dp)
+                    )
+                }
+            }
+            itemsIndexed(playlist.tracks) { index, track ->
+                TrackItem(
+                    index = index + 1,
+                    track = track,
+                    isCurrentlyPlaying = currentTrack?.id == track.id && isPlaying,
+                    onPlay = { viewModel.playTrack(track, playlist.tracks) }, // Pass the playlist tracks as queue
+                    onFavorite = { viewModel.toggleFavorite(track.id) },
+                    onAddToPlaylist = { /* Already in playlist */ },
+                    onRemoveFromPlaylist = { viewModel.removeTrackFromPlaylist(playlist.id, track.id) }
                 )
             }
         }
-        itemsIndexed(playlist.tracks) { index, track ->
-            TrackItem(
-                index = index + 1,
-                track = track,
-                isCurrentlyPlaying = currentTrack?.id == track.id && isPlaying,
-                onPlay = { viewModel.playTrack(track, playlist.tracks) }, // Pass the playlist tracks as queue
-                onFavorite = { viewModel.toggleFavorite(track.id) },
-                onAddToPlaylist = { /* Already in playlist */ }
-            )
-        }
+        SovereignScrollbar(
+            state = listState,
+            modifier = Modifier.align(Alignment.CenterEnd)
+        )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlaylistItem(
     playlist: Playlist,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onRename: () -> Unit
 ) {
+    var menuOpen by remember { mutableStateOf(false) }
     SovereignCard(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() },
+            .combinedClickable(
+                onClick = { onClick() },
+                onLongClick = { menuOpen = true }
+            ),
         cornerRadius = 16.dp,
         glassAlpha = 0.15f,
         glowRadius = 12.dp
@@ -549,6 +709,27 @@ private fun PlaylistItem(
                 }
                 IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
                     Icon(Icons.Default.Delete, null, tint = TitanColors.NeonRed.copy(alpha = 0.5f), modifier = Modifier.size(16.dp))
+                }
+                // More actions: rename (and delete with confirmation).
+                Box {
+                    IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
+                        Icon(
+                            Icons.Default.MoreVert,
+                            contentDescription = "Playlist options",
+                            tint = Color.White.copy(alpha = 0.45f),
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("RENOMBRAR", color = Color.White) },
+                            onClick = { menuOpen = false; onRename() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("ELIMINAR LISTA", color = TitanColors.NeonRed) },
+                            onClick = { menuOpen = false; onDelete() }
+                        )
+                    }
                 }
                 Icon(Icons.Default.ChevronRight, null, tint = Color.White.copy(alpha = 0.2f), modifier = Modifier.size(18.dp))
             }
@@ -809,31 +990,106 @@ private fun SovereignNowPlaying(viewModel: MusicHubViewModel, accentColor: Color
 // ══════════════════════════════════════════════════════════════
 
 @Composable
-private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Unit) {
-    var name by remember { mutableStateOf("") }
+private fun CreatePlaylistDialog(
+    viewModel: MusicHubViewModel,
+    onDismiss: () -> Unit,
+    onCreate: (String) -> Unit
+) {
+    PlaylistNameDialog(
+        title = "NUEVA LISTA",
+        confirmLabel = "CREAR",
+        nameError = { viewModel.playlistNameError(it) },
+        onConfirm = { name -> onCreate(name); true },
+        onDismiss = onDismiss
+    )
+}
+
+/**
+ * Dialog to rename an existing playlist.
+ */
+@Composable
+private fun RenamePlaylistDialog(
+    viewModel: MusicHubViewModel,
+    playlist: Playlist,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit
+) {
+    PlaylistNameDialog(
+        title = "RENOMBRAR LISTA",
+        confirmLabel = "GUARDAR",
+        initialName = playlist.name,
+        nameError = { viewModel.playlistNameError(it, exceptId = playlist.id) },
+        onConfirm = { name -> onRename(name); true },
+        onDismiss = onDismiss
+    )
+}
+
+/**
+ * Shared name editor with live validation: empty names, duplicates and the
+ * maximum length are rejected before anything is stored.
+ */
+@Composable
+private fun PlaylistNameDialog(
+    title: String,
+    confirmLabel: String,
+    initialName: String = "",
+    nameError: (String) -> String?,
+    onConfirm: (String) -> Boolean,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf(initialName) }
+    val error = nameError(name)
+    val canConfirm = name.isNotBlank() && error == null
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("NEW PLAYLIST", color = TitanColors.NeonCyan, fontWeight = FontWeight.Bold, letterSpacing = 2.sp) },
+        title = { Text(title, color = TitanColors.NeonCyan, fontWeight = FontWeight.Bold, letterSpacing = 2.sp) },
         text = {
-            TextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Playlist name", color = Color.White.copy(alpha = 0.4f)) },
-                colors = TextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    cursorColor = TitanColors.NeonCyan,
-                    focusedIndicatorColor = TitanColors.NeonCyan,
-                    unfocusedIndicatorColor = Color.White.copy(alpha = 0.1f),
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
+            Column {
+                TextField(
+                    value = name,
+                    onValueChange = { if (it.length <= MusicHubViewModel.MAX_PLAYLIST_NAME) name = it },
+                    label = { Text("NOMBRE DE LA LISTA", color = Color.White.copy(alpha = 0.4f)) },
+                    singleLine = true,
+                    colors = TextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        cursorColor = TitanColors.NeonCyan,
+                        focusedIndicatorColor = TitanColors.NeonCyan,
+                        unfocusedIndicatorColor = Color.White.copy(alpha = 0.1f),
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = error?.takeIf { name.isNotBlank() } ?: "",
+                        color = TitanColors.NeonRed,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${name.length}/${MusicHubViewModel.MAX_PLAYLIST_NAME}",
+                        color = Color.White.copy(alpha = 0.35f),
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
         },
         confirmButton = {
-            TextButton(onClick = { if (name.isNotBlank()) onCreate(name) }) {
-                Text("CREATE", color = TitanColors.NeonCyan, fontWeight = FontWeight.Bold)
+            Button(
+                onClick = { onConfirm(name) },
+                enabled = canConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = TitanColors.NeonCyan.copy(alpha = 0.2f)),
+                border = BorderStroke(1.dp, TitanColors.NeonCyan)
+            ) {
+                Text(confirmLabel, color = TitanColors.NeonCyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
@@ -843,11 +1099,48 @@ private fun CreatePlaylistDialog(onDismiss: () -> Unit, onCreate: (String) -> Un
     )
 }
 
+/**
+ * Deleting a playlist is always the client's decision, so it is confirmed.
+ */
+@Composable
+private fun DeletePlaylistDialog(
+    playlist: Playlist,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("ELIMINAR LISTA", color = TitanColors.NeonRed, fontWeight = FontWeight.Bold, letterSpacing = 2.sp) },
+        text = {
+            Text(
+                "\"${playlist.name}\" y sus ${playlist.tracks.size} pistas se eliminaran. " +
+                    "Esta accion no se puede deshacer.",
+                color = Color.White.copy(alpha = 0.7f),
+                fontSize = 13.sp
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(containerColor = TitanColors.NeonRed.copy(alpha = 0.2f)),
+                border = BorderStroke(1.dp, TitanColors.NeonRed)
+            ) {
+                Text("ELIMINAR", color = TitanColors.NeonRed, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("CANCELAR", color = Color.White.copy(alpha = 0.5f)) }
+        },
+        containerColor = TitanColors.AbsoluteBlack.copy(alpha = 0.95f)
+    )
+}
+
 @Composable
 private fun AddToPlaylistDialog(
     viewModel: MusicHubViewModel,
     onDismiss: () -> Unit,
-    onSelect: (Long) -> Unit
+    onSelect: (Long) -> Unit,
+    onCreateNew: () -> Unit
 ) {
     val playlists by viewModel.playlists.collectAsState()
 
@@ -856,9 +1149,32 @@ private fun AddToPlaylistDialog(
         title = { Text("SELECT PLAYLIST", color = TitanColors.NeonCyan, fontWeight = FontWeight.Bold, letterSpacing = 2.sp) },
         text = {
             if (playlists.isEmpty()) {
-                Text("No playlists found. Create one first.", color = Color.White.copy(alpha = 0.5f))
+                Column {
+                    Text("Todavia no hay listas. Crea una ahora.", color = Color.White.copy(alpha = 0.5f))
+                    Spacer(modifier = Modifier.height(12.dp))
+                    NewPlaylistButton(onClick = onCreateNew)
+                }
             } else {
                 LazyColumn {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onCreateNew() }
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Add, null, tint = TitanColors.RadioactiveGreen, modifier = Modifier.size(20.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(
+                                "CREAR NUEVA LISTA",
+                                color = TitanColors.RadioactiveGreen,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
                     items(playlists) { playlist ->
                         Row(
                             modifier = Modifier
@@ -898,7 +1214,8 @@ private fun formatTime(ms: Long): String {
 fun TrackOptionsDialog(
     track: MusicTrack,
     onDismiss: () -> Unit,
-    onAddToPlaylist: () -> Unit
+    onAddToPlaylist: () -> Unit,
+    onRemoveFromPlaylist: (() -> Unit)? = null
 ) {
     val accentColor = SectionColorManager.musicAccent
 
@@ -930,6 +1247,13 @@ fun TrackOptionsDialog(
                     .padding(vertical = 8.dp)
             ) {
                 OptionItem(Icons.Default.PlaylistAdd, "Add to Playlist", Color.White) { onAddToPlaylist() }
+                if (onRemoveFromPlaylist != null) {
+                    OptionItem(
+                        Icons.Default.RemoveCircleOutline,
+                        "Quitar de esta lista",
+                        TitanColors.NeonRed
+                    ) { onRemoveFromPlaylist() }
+                }
             }
         },
         confirmButton = {

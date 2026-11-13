@@ -2,19 +2,19 @@ package com.elysium.vanguard.recordshield.service
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.media.*
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
-import com.elysium.vanguard.recordshield.util.SafeLog as Log
 import android.util.Size
 import android.view.Surface
 import com.elysium.vanguard.recordshield.data.cloud.VideoQualityPreset
-import kotlinx.coroutines.*
+import com.elysium.vanguard.recordshield.util.SafeLog as Log
 import java.io.File
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * ============================================================================
@@ -32,6 +32,15 @@ import java.util.concurrent.TimeUnit
  *   - Each camera records to a separate MP4 file
  *   - Both recordings start/stop synchronously
  *
+ * HARDWARE CONTRACT (Android):
+ *   1. The microphone is an EXCLUSIVE resource. Two MediaRecorders cannot both
+ *      capture audio: the second one fails. So the REAR recorder carries the
+ *      audio and the FRONT recorder is video only.
+ *   2. Opening two cameras at the same time is only allowed for the camera
+ *      pairs the device declares as concurrent. That is asked to the platform
+ *      with [CameraManager.getConcurrentCameraIds]; when the front + rear pair
+ *      is not supported the caller is told instead of failing silently.
+ *
  * Thread Safety:
  *   - Camera2 operations require a dedicated HandlerThread
  *   - MediaRecorder must be created/started/stopped on the correct thread
@@ -42,6 +51,9 @@ class DualCameraManager(private val context: Context) {
 
     companion object {
         private const val TAG = "DualCameraManager"
+
+        /** How long to wait for both cameras to be ready. */
+        private const val OPEN_TIMEOUT_MS = 5_000L
     }
 
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -57,12 +69,62 @@ class DualCameraManager(private val context: Context) {
     private val cameraThread = HandlerThread("DualCameraThread").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
 
-    private val openLock = Semaphore(2, true) // 2 permits for simultaneous open
+    private val openLock = Semaphore(1, true)
     private var isRecording = false
 
-    // Preview surfaces
-    private var rearPreviewSurface: Surface? = null
-    private var frontPreviewSurface: Surface? = null
+    /**
+     * What the platform says about this device: can the front and the rear
+     * cameras really be open at the same time.
+     */
+    data class ConcurrentSupport(
+        val supported: Boolean,
+        val rearCameraId: String?,
+        val frontCameraId: String?,
+        /** Human readable explanation, shown to the client when unsupported. */
+        val reason: String
+    )
+
+    /**
+     * Asks the platform for the concurrent camera support. Never guesses.
+     */
+    fun queryConcurrentSupport(): ConcurrentSupport {
+        return try {
+            val backId = getCameraId(CameraCharacteristics.LENS_FACING_BACK)
+            val frontId = getCameraId(CameraCharacteristics.LENS_FACING_FRONT)
+            if (backId == null || frontId == null) {
+                return ConcurrentSupport(
+                    false, null, null,
+                    "Este dispositivo no expone camara frontal y trasera"
+                )
+            }
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                return ConcurrentSupport(
+                    false, backId, frontId,
+                    "La camara concurrente requiere Android 11 o superior"
+                )
+            }
+            val pairs = cameraManager.concurrentCameraIds
+            if (pairs.isNullOrEmpty()) {
+                return ConcurrentSupport(
+                    false, backId, frontId,
+                    "El dispositivo no declara pares de camara concurrente"
+                )
+            }
+            val match = pairs.firstOrNull { set ->
+                set.contains(backId) && set.contains(frontId)
+            }
+            if (match == null) {
+                ConcurrentSupport(
+                    false, backId, frontId,
+                    "Este dispositivo no admite camara frontal y trasera simultaneas"
+                )
+            } else {
+                ConcurrentSupport(true, backId, frontId, "OK")
+            }
+        } catch (e: Exception) {
+            ConcurrentSupport(false, null, null, "No se pudo consultar el soporte de camara: ${e.message}")
+        }
+    }
 
     /**
      * Callback for preview frame updates.
@@ -76,8 +138,8 @@ class DualCameraManager(private val context: Context) {
      * Open both cameras and start recording.
      *
      * @param preset Quality preset for recording
-     * @param rearOutput File for rear camera output
-     * @param frontOutput File for front camera output
+     * @param rearOutput File for rear camera output (carries the audio)
+     * @param frontOutput File for front camera output (video only)
      * @param onReady Called when both cameras are ready
      * @param onError Called on error with exception
      */
@@ -94,12 +156,23 @@ class DualCameraManager(private val context: Context) {
             return
         }
 
-        try {
-            // Create MediaRecorders
-            rearRecorder = createMediaRecorder(preset, rearOutput)
-            frontRecorder = createMediaRecorder(preset, frontOutput)
+        // HARDWARE CONTRACT: the device must declare the front + rear pair as
+        // concurrent. Otherwise we say so instead of failing obscurely.
+        val support = queryConcurrentSupport()
+        if (!support.supported) {
+            Log.e(TAG, "Concurrent camera not supported: ${support.reason}")
+            onError(IllegalStateException(support.reason))
+            return
+        }
+        val rearCameraId = support.rearCameraId!!
+        val frontCameraId = support.frontCameraId!!
 
-            // Get surfaces from recorders
+        try {
+            // The microphone can only be taken once: the REAR recorder gets the
+            // audio, the FRONT recorder is video only.
+            rearRecorder = createMediaRecorder(preset, rearOutput, withAudio = true)
+            frontRecorder = createMediaRecorder(preset, frontOutput, withAudio = false)
+
             rearSurface = rearRecorder!!.surface
             frontSurface = frontRecorder!!.surface
 
@@ -110,21 +183,11 @@ class DualCameraManager(private val context: Context) {
 
             isRecording = true
 
-            // Open both cameras simultaneously
-            val rearCameraId = getCameraId(CameraCharacteristics.LENS_FACING_BACK)
-            val frontCameraId = getCameraId(CameraCharacteristics.LENS_FACING_FRONT)
-
-            if (rearCameraId == null || frontCameraId == null) {
-                onError(IllegalStateException("Could not find both cameras"))
-                return
-            }
-
-            var camerasOpened = 0
+            val opened = AtomicInteger(0)
             val onCameraOpened = {
-                camerasOpened++
-                if (camerasOpened == 2) {
+                if (opened.incrementAndGet() == 2) {
                     // Both cameras opened, create sessions and start recording
-                    createCaptureSessions(rearOutput, frontOutput, preset, onReady, onError)
+                    createCaptureSessions(preset, onReady, onError)
                 }
             }
 
@@ -183,8 +246,8 @@ class DualCameraManager(private val context: Context) {
             frontSession = null
 
             rearSurface?.release()
-            frontSurface?.release()
-            rearSurface = null
+            frontSurface = null
+            rearSurface?.release()
             frontSurface = null
 
             onComplete()
@@ -203,7 +266,15 @@ class DualCameraManager(private val context: Context) {
     // INTERNAL METHODS
     // ========================================================================
 
-    private fun createMediaRecorder(preset: VideoQualityPreset, outputFile: File): MediaRecorder {
+    /**
+     * @param withAudio false for the front camera: the microphone is an
+     * exclusive resource and only one recorder can own it.
+     */
+    private fun createMediaRecorder(
+        preset: VideoQualityPreset,
+        outputFile: File,
+        withAudio: Boolean
+    ): MediaRecorder {
         val recorder = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             MediaRecorder(context)
         } else {
@@ -213,10 +284,14 @@ class DualCameraManager(private val context: Context) {
 
         recorder.apply {
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            setAudioSource(MediaRecorder.AudioSource.MIC)
+            if (withAudio) {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+            }
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            if (withAudio) {
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            }
             setVideoSize(preset.width, preset.height)
             setVideoEncodingBitRate(preset.videoBitrate)
             setVideoFrameRate(30)
@@ -229,9 +304,13 @@ class DualCameraManager(private val context: Context) {
     }
 
     private fun getCameraId(facing: Int): String? {
-        return cameraManager.cameraIdList.firstOrNull { id ->
-            val characteristics = cameraManager.getCameraCharacteristics(id)
-            characteristics.get(CameraCharacteristics.LENS_FACING) == facing
+        return try {
+            cameraManager.cameraIdList.firstOrNull { id ->
+                val characteristics = cameraManager.getCameraCharacteristics(id)
+                characteristics.get(CameraCharacteristics.LENS_FACING) == facing
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -241,34 +320,45 @@ class DualCameraManager(private val context: Context) {
         onOpened: (CameraDevice) -> Unit,
         onError: (Exception) -> Unit
     ) {
-        cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) {
-                onOpened(camera)
-            }
+        // Exclusive access to the camera open sequence.
+        val acquired = openLock.tryAcquire(OPEN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        if (!acquired) {
+            onError(IllegalStateException("Timeout opening camera $cameraId"))
+            return
+        }
+        try {
+            cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    openLock.release()
+                    onOpened(camera)
+                }
 
-            override fun onDisconnected(camera: CameraDevice) {
-                onError(IllegalStateException("Camera $cameraId disconnected"))
-                camera.close()
-            }
+                override fun onDisconnected(camera: CameraDevice) {
+                    openLock.release()
+                    onError(IllegalStateException("Camera $cameraId disconnected"))
+                    camera.close()
+                }
 
-            override fun onError(camera: CameraDevice, error: Int) {
-                onError(IllegalStateException("Camera $cameraId error: $error"))
-                camera.close()
-            }
-        }, cameraHandler)
+                override fun onError(camera: CameraDevice, error: Int) {
+                    openLock.release()
+                    onError(IllegalStateException("Camera $cameraId error: $error"))
+                    camera.close()
+                }
+            }, cameraHandler)
+        } catch (e: Exception) {
+            openLock.release()
+            onError(e)
+        }
     }
 
     private fun createCaptureSessions(
-        rearOutput: File,
-        frontOutput: File,
         preset: VideoQualityPreset,
         onReady: () -> Unit,
         onError: (Exception) -> Unit
     ) {
-        var sessionsCreated = 0
+        val sessionsCreated = AtomicInteger(0)
         val onSessionCreated = {
-            sessionsCreated++
-            if (sessionsCreated == 2) {
+            if (sessionsCreated.incrementAndGet() == 2) {
                 // Both sessions created, start recording
                 startRecording()
                 onReady()
@@ -330,7 +420,7 @@ class DualCameraManager(private val context: Context) {
         try {
             rearRecorder?.start()
             frontRecorder?.start()
-            Log.i(TAG, "Dual recording started")
+            Log.i(TAG, "Dual recording started (rear = video + audio, front = video only)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start recording", e)
             throw e

@@ -59,6 +59,7 @@ import com.elysium.nexus.ui.hub.TvControlsSection
 import com.elysium.nexus.ui.mac.MacControlSurfaceScreen
 import com.elysium.nexus.ui.mac.MacDiscoveryScreen
 import com.elysium.nexus.ui.mac.MacPairingScreen
+import com.elysium.nexus.ui.mac.NexusInternetScreen
 import com.elysium.nexus.ui.mac.ManualAddHostDialog
 import com.elysium.nexus.ui.settings.SettingsDialog
 import com.elysium.nexus.ui.theme.ElysiumTheme
@@ -370,7 +371,23 @@ class MainActivity : ComponentActivity() {
                 val navStack = rememberSaveable(
                     stateSaver = Saver<List<HubDestination>, List<String>>(
                         save = { stack -> com.elysium.nexus.ui.hub.HubStackCodec.encodeStack(stack) },
-                        restore = { codes -> com.elysium.nexus.ui.hub.HubStackCodec.decodeStack(codes) }
+                        restore = { codes ->
+                            val restored = com.elysium.nexus.ui.hub.HubStackCodec.decodeStack(codes)
+                            // MacTransport is intentionally in-memory and cannot
+                            // survive Android process/activity recreation. Never
+                            // restore a control surface whose socket and keys no
+                            // longer exist; that produces a convincing but dead UI.
+                            if (restored.any {
+                                    it is HubDestination.MacPairing ||
+                                        it is HubDestination.MacControl
+                                }
+                            ) {
+                                Log.w(tag, "Mac route restored without its transport; returning Nexus to Home")
+                                listOf(HubDestination.Hub)
+                            } else {
+                                restored.ifEmpty { listOf(HubDestination.Hub) }
+                            }
+                        }
                     )
                 ) { mutableStateOf(listOf(HubDestination.Hub)) }
                 val settingsVisible = remember { mutableStateOf(false) }
@@ -421,22 +438,11 @@ class MainActivity : ComponentActivity() {
                     SplashScreen(
                         onSplashComplete = {
                             splashVisible = false
-                            // Auto-detect USB-C cable bridge on startup
-                            activityScope?.launch(Dispatchers.IO) {
-                                try {
-                                    val s = java.net.Socket()
-                                    s.connect(java.net.InetSocketAddress("127.0.0.1", 7878), 1000)
-                                    s.close()
-                                    Log.i(tag, "USB-C Direct Cable detected! Auto-launching UsbC screen...")
-                                    withContext(Dispatchers.Main) {
-                                        if (navStack.value.last() is HubDestination.Hub) {
-                                            navStack.value = navStack.value + HubDestination.UsbC
-                                        }
-                                    }
-                                } catch (_: Throwable) {
-                                    Log.d(tag, "No USB-C cable bridge active on startup.")
-                                }
-                            }
+                            // An adb reverse localhost route only proves that a
+                            // bridge exists; it does not identify whether ADB is
+                            // using USB-C or Wi-Fi. Keep startup on Home and let
+                            // the user choose the intended transport explicitly.
+                            Log.i(tag, "Nexus startup complete; transport selection remains explicit")
                         }
                     )
                     return@ElysiumTheme
@@ -494,9 +500,9 @@ class MainActivity : ComponentActivity() {
                             navStack.value = navStack.value + HubDestination.InstalledProfiles
                         },
                         onMacSelected = {
-                            // MAC/PC card is the companion surface
-                            // (screen sharing), not universal control.
-                            navStack.value = navStack.value + HubDestination.UsbC
+                            // Wi-Fi opens the live discovery screen. It refreshes
+                            // stale addresses and keeps manual IP entry available.
+                            navStack.value = navStack.value + HubDestination.MacDiscovery
                         },
                         onUsbCSelected = {
                             navStack.value = navStack.value + HubDestination.UsbC
@@ -518,23 +524,13 @@ class MainActivity : ComponentActivity() {
                         firstDeviceLabel = connectedDevice?.let { "${it.brand} ${it.model}" },
                         quickConnect = lastDevice,
                         onQuickConnect = {
-                            when (val d = lastDevice) {
+                            when (lastDevice) {
                                 is com.elysium.nexus.core.profile.LastDevice.Mac -> {
-                                    // Build a synthetic
-                                    // DiscoveredHost from
-                                    // the remembered IP +
-                                    // port and jump to
-                                    // the pairing screen.
-                                    val synthetic = com.elysium.nexus.ui.mac.DiscoveredHost(
-                                        id = "quick-${d.host}-${d.port}",
-                                        name = d.name,
-                                        type = com.elysium.nexus.ui.mac.HostType.MAC_DESKTOP,
-                                        signalStrength = 3,
-                                        isOnline = true,
-                                        host = d.host,
-                                        port = d.port
-                                    )
-                                    navStack.value = navStack.value + HubDestination.MacPairing(synthetic)
+                                    // A saved IP can change when the Mac joins a
+                                    // different Wi-Fi network or receives a DHCP
+                                    // lease. Re-scan before pairing; discovery
+                                    // also exposes the manual IP path.
+                                    navStack.value = navStack.value + HubDestination.MacDiscovery
                                 }
                                 is com.elysium.nexus.core.profile.LastDevice.Bluetooth -> {
                                     // The BT connect is
@@ -677,6 +673,9 @@ class MainActivity : ComponentActivity() {
                             manualAddVisible.value = true
                         }
                     )
+                    HubDestination.MacInternet -> NexusInternetScreen(
+                        onBack = { navStack.value = navStack.value.dropLast(1) }
+                    )
                     is HubDestination.MacPairing -> MacPairingScreen(
                         host = current.host,
                         onBack = {
@@ -728,6 +727,9 @@ class MainActivity : ComponentActivity() {
                     )
                     is HubDestination.UsbC -> com.elysium.nexus.ui.usb.UsbCConnectionScreen(
                         onBack = { navStack.value = navStack.value.dropLast(1) },
+                        onFallbackToWifi = {
+                            navStack.value = navStack.value.dropLast(1) + HubDestination.MacDiscovery
+                        },
                         transport = macTransport
                     )
                     is HubDestination.WifiUniversal -> com.elysium.nexus.ui.wifi.WifiUniversalScreen(

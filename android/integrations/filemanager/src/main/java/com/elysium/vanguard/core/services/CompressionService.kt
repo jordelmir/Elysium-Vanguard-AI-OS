@@ -33,6 +33,8 @@ class CompressionService : Service() {
         const val EXTRA_FILES = "extra_files"
         const val EXTRA_OUTPUT = "extra_output"
         const val EXTRA_KEEP_SCREEN_ON = "extra_keep_screen_on"
+        const val EXTRA_FORMAT = "extra_format"
+        const val EXTRA_PASSWORD = "extra_password"
     }
 
     private var currentJob: Job? = null
@@ -55,6 +57,11 @@ class CompressionService : Service() {
         val files = intent?.getStringArrayExtra(EXTRA_FILES)?.map { File(it) }
         val output = intent?.getStringExtra(EXTRA_OUTPUT)?.let { File(it) }
         val keepScreenOn = intent?.getBooleanExtra(EXTRA_KEEP_SCREEN_ON, false) ?: false
+        val formatName = intent?.getStringExtra(EXTRA_FORMAT)
+        val password = intent?.getStringExtra(EXTRA_PASSWORD)?.takeIf { it.isNotEmpty() }
+        val format = formatName?.let { name ->
+            com.elysium.vanguard.core.util.CompressionFormat.entries.firstOrNull { it.id == name }
+        } ?: com.elysium.vanguard.core.util.CompressionFormat.ZIP
 
         if (files != null && output != null) {
             if (keepScreenOn) acquireWakeLock()
@@ -63,13 +70,19 @@ class CompressionService : Service() {
 
             currentJob = serviceScope.launch {
                 val result = when (action) {
-                    ACTION_COMPRESS -> CompressionEngine.compress(files, output, object : CompressionEngine.ProgressListener {
-                        override fun onProgress(percentage: Int, currentFile: String) {
-                            if (!isActive) throw CancellationException("User cancelled")
-                            updateNotification(currentFile, percentage)
-                            broadcastProgress(percentage, currentFile)
+                    ACTION_COMPRESS -> CompressionEngine.compress(
+                        files,
+                        output,
+                        format,
+                        password,
+                        object : CompressionEngine.ProgressListener {
+                            override fun onProgress(percentage: Int, currentFile: String) {
+                                if (!isActive) throw CancellationException("User cancelled")
+                                updateNotification(currentFile, percentage)
+                                broadcastProgress(percentage, currentFile)
+                            }
                         }
-                    })
+                    )
                     ACTION_DECOMPRESS -> CompressionEngine.decompress(files.first(), output, null, object : CompressionEngine.ProgressListener {
                         override fun onProgress(percentage: Int, currentFile: String) {
                             if (!isActive) throw CancellationException("User cancelled")

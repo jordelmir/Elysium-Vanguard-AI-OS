@@ -159,6 +159,9 @@ class MacProtocolTest {
         assertEquals(0x09.toByte(), MacProtocol.FrameType.PINCH.byte)
         assertEquals(0x0A.toByte(), MacProtocol.FrameType.HEARTBEAT.byte)
         assertEquals(0x0B.toByte(), MacProtocol.FrameType.GOODBYE.byte)
+        assertEquals(0x0F.toByte(), MacProtocol.FrameType.MOUSE_ABS_MOVE.byte)
+        assertEquals(0x10.toByte(), MacProtocol.FrameType.SCREEN_STATUS.byte)
+        assertEquals(0x11.toByte(), MacProtocol.FrameType.TEXT_INPUT.byte)
     }
 
     @Test
@@ -181,6 +184,20 @@ class MacProtocolTest {
         val ok = result as MacProtocol.FrameParseResult.Ok
         assertEquals(MacProtocol.FrameType.SCROLL, ok.frame.type)
         assertArrayEquals(payload, ok.frame.payload)
+    }
+
+    @Test
+    fun `global text input frame preserves Unicode characters`() {
+        val text = "Prueba ñ, á, ¿sí? 🚗"
+        val payload = text.toByteArray(Charsets.UTF_8)
+        val encoded = MacProtocol.encodeFrame(MacProtocol.FrameType.TEXT_INPUT, payload)
+
+        val result = MacProtocol.readFrame(encoded)
+        assertTrue(result is MacProtocol.FrameParseResult.Ok)
+        val parsed = result as MacProtocol.FrameParseResult.Ok
+        assertEquals(MacProtocol.FrameType.TEXT_INPUT, parsed.frame.type)
+        assertEquals(text, parsed.frame.payload.toString(Charsets.UTF_8))
+        assertEquals(encoded.size, parsed.consumedBytes)
     }
 
     // === Helpers ===

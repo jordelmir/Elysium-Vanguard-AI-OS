@@ -1,6 +1,7 @@
 package com.elysium.nexus.core.transport.mac
 
 import android.util.Log
+import android.os.SystemClock
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,6 +20,8 @@ import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -76,7 +79,7 @@ import kotlinx.coroutines.flow.asSharedFlow
  */
 class MacTransport {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val _state = MutableStateFlow<MacConnectionState>(MacConnectionState.Idle)
     val state: StateFlow<MacConnectionState> = _state.asStateFlow()
 
@@ -85,14 +88,26 @@ class MacTransport {
     // frames. This prevents large JPEG frames
     // (~30-50KB) from blocking tiny mouse move
     // packets (~50 bytes).
-    private val inputEvents = Channel<ByteArray>(capacity = Channel.UNLIMITED)
-    private val outgoing = Channel<ByteArray>(capacity = Channel.UNLIMITED)
+    private var inputEvents = Channel<ByteArray>(capacity = Channel.UNLIMITED)
+    private var outgoing = Channel<ByteArray>(capacity = Channel.UNLIMITED)
     private val connected = AtomicBoolean(false)
     private var socket: Socket? = null
     private var readJob: Job? = null
     private var writeJob: Job? = null
     private var keyPair: MacCrypto.KeyPair? = null
     private var channelKey: MacCrypto.ChannelKey? = null
+    private var rejectedScreenFrameCount = 0
+    @Volatile private var sessionId: String = "idle"
+    private val inputFramesQueued = AtomicLong(0)
+    private val inputFramesWritten = AtomicLong(0)
+    private val inputFramesDropped = AtomicLong(0)
+    private val inboundFrames = AtomicLong(0)
+    private val screenFramesAuthenticated = AtomicLong(0)
+    private val screenBytesReceived = AtomicLong(0)
+    private val metricsLogAt = AtomicLong(0)
+    private val missingChannelKeyLogAt = AtomicLong(0)
+    private val _screenStatus = MutableSharedFlow<MacProtocol.ScreenShareStatus>(replay = 1, extraBufferCapacity = 8)
+    val screenStatus: SharedFlow<MacProtocol.ScreenShareStatus> = _screenStatus.asSharedFlow()
     // Screen frame stream — JPEG bytes from Mac.
     private val _screenFrames = MutableSharedFlow<ByteArray>(
         replay = 1,
@@ -135,15 +150,23 @@ class MacTransport {
     suspend fun startHandshake(host: DiscoveredHost): MacConnectionState =
         withContext(Dispatchers.IO) {
             if (!connected.compareAndSet(false, true)) {
+                Log.w(TAG, "[$sessionId] connect ignored: transport already active state=${_state.value::class.simpleName}")
                 return@withContext _state.value
             }
+            sessionId = UUID.randomUUID().toString().take(8)
+            Log.i(TAG, "[$sessionId] TCP connect begin host=${host.host} port=${host.port} name=${host.name}")
             _state.value = MacConnectionState.Connecting(host.name)
             try {
                 // 1. Open the TCP socket.
                 val sock = Socket()
                 sock.connect(InetSocketAddress(host.host, host.port), 5_000)
                 sock.tcpNoDelay = true
+                // ADB reverse can use USB or wireless ADB and always appears
+                // loopback-side on the Mac. It still requires the same explicit
+                // user PIN confirmation as a direct network connection.
+                sock.soTimeout = 8_000
                 socket = sock
+                Log.i(TAG, "[$sessionId] TCP connected local=${sock.localAddress.hostAddress}:${sock.localPort} remote=${sock.inetAddress.hostAddress}:${sock.port}")
                 val input = sock.getInputStream()
                 val output = sock.getOutputStream()
 
@@ -158,7 +181,7 @@ class MacTransport {
                 )
                 output.write(helloFrame)
                 output.flush()
-                Log.d(TAG, "Sent HELLO (${kp.publicKeyBytes.size} B pubkey)")
+                Log.i(TAG, "[$sessionId] HELLO sent publicKeyBytes=${kp.publicKeyBytes.size}")
 
                 // 4. Read HELLO_ACK (server's 32-byte public key).
                 val (ackType, ackPayload) = readOneFrame(input)
@@ -169,12 +192,13 @@ class MacTransport {
                 if (ackPayload.size != 32) {
                     throw IOException("HELLO_ACK payload must be 32 B, got ${ackPayload.size}")
                 }
+                Log.i(TAG, "[$sessionId] HELLO_ACK received publicKeyBytes=${ackPayload.size}")
                 val theirPublicKey = ackPayload
 
                 // 5. Derive the channel key.
                 val ck = MacCrypto.deriveChannelKey(kp, theirPublicKey)
                 channelKey = ck
-                Log.d(TAG, "Derived channel key")
+                Log.i(TAG, "[$sessionId] channel crypto ready cipher=ChaCha20-Poly1305 keyBytes=32")
 
                 // Stash the streams for the PIN phase.
                 pendingInput = input
@@ -183,10 +207,11 @@ class MacTransport {
                 // Transition to AwaitingPin. The UI
                 // now shows the PIN entry form.
                 _state.value = MacConnectionState.AwaitingPin(host.name, host.model, host.osVersion)
-                Log.d(TAG, "Handshake half-done; awaiting PIN")
+                val route = if (host.host == "127.0.0.1" || host.host == "localhost" || host.host == "::1") "adb-reverse" else "network"
+                Log.i(TAG, "[$sessionId] handshake complete; awaiting explicit user PIN route=$route value=redacted")
                 _state.value
             } catch (e: Throwable) {
-                Log.e(TAG, "Handshake failed: ${e.message}", e)
+                Log.e(TAG, "[$sessionId] handshake failed stage=${_state.value::class.simpleName} error=${e.message}", e)
                 _state.value = MacConnectionState.Error(e.message ?: e::class.java.simpleName)
                 connected.set(false)
                 socket?.close()
@@ -198,7 +223,7 @@ class MacTransport {
         }
 
     /**
-     * Sends the 6 encrypted PIN digits and waits
+     * Sends the 6 encrypted PIN digits entered by the user and waits
      * for the encrypted `PAIR_OK` from the Mac.
      *
      * On success, the read/write pumps are
@@ -206,6 +231,7 @@ class MacTransport {
      * [MacConnectionState.Ready].
      */
     suspend fun sendPin(pin: String): MacConnectionState = withContext(Dispatchers.IO) {
+        Log.i(TAG, "[$sessionId] PIN submission begin digits=${pin.length}; value omitted")
         require(pin.length == 6 && pin.all { it.isDigit() }) {
             "PIN must be 6 digits"
         }
@@ -226,7 +252,7 @@ class MacTransport {
             _state.value
         }
         try {
-            // 1. Send 6 encrypted PIN_DIGIT frames.
+            // Send six encrypted PIN_DIGIT frames after explicit user entry.
             for ((index, ch) in pin.withIndex()) {
                 val digit = (ch.digitToInt() and 0xFF).toByte()
                 val encryptedDigit = ck.encrypt(byteArrayOf(digit))
@@ -239,7 +265,7 @@ class MacTransport {
                 Log.d(TAG, "Sent PIN_DIGIT $index")
             }
 
-            // 2. Read response frame (PAIR_OK or zero-PIN auto-approved stream frame).
+            // 2. Read the encrypted PAIR_OK response.
             val frameResult = readOneFrame(input)
             if (frameResult == null) {
                 Log.w(TAG, "Server disconnected before completing pairing handshake (EOF)")
@@ -253,7 +279,7 @@ class MacTransport {
             if (pairType == MacProtocol.FrameType.PAIR_OK) {
                 val pairPlain = ck.decrypt(pairPayload)
                 if (pairPlain.isNotEmpty() && pairPlain[0] != 0x01.toByte()) {
-                    Log.w(TAG, "Pairing rejected by server")
+                    Log.w(TAG, "[$sessionId] pairing rejected by Mac")
                     _state.value = MacConnectionState.Error("Pairing rejected: wrong PIN")
                     connected.set(false)
                     sock.close()
@@ -269,19 +295,16 @@ class MacTransport {
             }
 
             // 3. Handshake complete — start the read/write pumps.
-            readJob = scope.launch { readPump(input) }
-            writeJob = scope.launch { writePump(output) }
-            pendingInput = null
-            pendingOutput = null
+            startPumps(input, output)
             val lastReady = _state.value as? MacConnectionState.AwaitingPin
             val name = lastReady?.hostName ?: "host"
             val model = lastReady?.model ?: "Mac"
             val os = lastReady?.osVersion ?: "macOS"
             _state.value = MacConnectionState.Ready(name, model, os)
-            Log.d(TAG, "PIN accepted; transport READY")
+            Log.i(TAG, "[$sessionId] pairing accepted; read/write pumps active")
             _state.value
         } catch (e: Throwable) {
-            Log.e(TAG, "sendPin failed: ${e.message}", e)
+            Log.e(TAG, "[$sessionId] PIN/PAIR_OK failed error=${e.message}", e)
             _state.value = MacConnectionState.Error(e.message ?: e::class.java.simpleName)
             connected.set(false)
             try {
@@ -309,7 +332,8 @@ class MacTransport {
      * GOODBYE frame, then closes the socket.
      */
     fun disconnect() {
-        if (!connected.compareAndSet(true, false)) return
+        Log.i(TAG, "[$sessionId] disconnect requested")
+        connected.set(false)
         try {
             channelKey?.let {
                 val enc = it.encrypt(ByteArray(0))
@@ -329,7 +353,13 @@ class MacTransport {
         socket = null
         keyPair = null
         channelKey = null
-        scope.coroutineContext.cancel()
+        readJob?.cancel(); readJob = null
+        writeJob?.cancel(); writeJob = null
+        scope.cancel()
+        scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        inputEvents.cancel(); outgoing.cancel()
+        inputEvents = Channel(capacity = Channel.UNLIMITED)
+        outgoing = Channel(capacity = Channel.UNLIMITED)
         _state.value = MacConnectionState.Disconnected
     }
 
@@ -410,17 +440,43 @@ class MacTransport {
      */
     fun sendScreenRequest(start: Boolean) {
         val cmd: Byte = if (start) 0x01 else 0x00
+        Log.i(TAG, "[$sessionId] screen request=${if (start) "START" else "STOP"} encrypted=${channelKey != null} state=${_state.value::class.simpleName}")
         sendEncrypted(MacProtocol.FrameType.SCREEN_REQUEST, byteArrayOf(cmd))
     }
 
     // === Internals ===
 
+    private fun startPumps(input: java.io.InputStream, output: java.io.OutputStream) {
+        // The handshake timeout is only for negotiation; an idle screen stream
+        // must remain connected while the user watches or controls the Mac.
+        socket?.soTimeout = 0
+        readJob?.cancel()
+        writeJob?.cancel()
+        readJob = scope.launch { readPump(input) }
+        writeJob = scope.launch { writePump(output) }
+        pendingInput = null
+        pendingOutput = null
+    }
+
     /** High-priority send for input events (mouse, key, click). */
     private fun sendHighPriority(type: MacProtocol.FrameType, payload: ByteArray) {
-        val ck = channelKey ?: return
+        val ck = channelKey ?: run {
+            val now = SystemClock.elapsedRealtime()
+            val last = missingChannelKeyLogAt.get()
+            if (now - last > 5_000 && missingChannelKeyLogAt.compareAndSet(last, now)) {
+                Log.w(TAG, "[$sessionId] INPUT_DROP type=$type reason=no_channel_key state=${_state.value::class.simpleName}")
+            }
+            inputFramesDropped.incrementAndGet()
+            return
+        }
         val enc = ck.encrypt(payload)
         val frame = MacProtocol.encodeFrame(type, enc)
-        inputEvents.trySend(frame)
+        val result = inputEvents.trySend(frame)
+        if (result.isSuccess) inputFramesQueued.incrementAndGet() else {
+            inputFramesDropped.incrementAndGet()
+            Log.w(TAG, "[$sessionId] INPUT_DROP type=$type reason=queue_rejected cause=${result.exceptionOrNull()?.javaClass?.simpleName}")
+        }
+        logTransportMetricsIfDue()
     }
 
     /** Normal-priority send for non-input frames. */
@@ -454,6 +510,11 @@ class MacTransport {
                     val r = MacProtocol.readFrameFromStream(inBuf, inLen, consumed)
                     when (r) {
                         is MacProtocol.StreamReadResult.Ok -> {
+                            inboundFrames.incrementAndGet()
+                            if (r.frame.type == MacProtocol.FrameType.SCREEN_FRAME) {
+                                screenBytesReceived.addAndGet(r.frame.payload.size.toLong())
+                            }
+                            logTransportMetricsIfDue()
                             handleFrame(r.frame)
                             consumed = r.newConsumed
                         }
@@ -480,31 +541,76 @@ class MacTransport {
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "readPump: ${e.message}")
+            Log.w(TAG, "[$sessionId] read pump failed error=${e.message}", e)
         }
+        Log.i(TAG, "[$sessionId] read pump ended connected=${connected.get()}")
         _state.value = MacConnectionState.Disconnected
     }
 
-    private fun handleFrame(frame: MacProtocol.Frame) {
-        when (frame.type) {
+    private fun handleFrame(wireFrame: MacProtocol.Frame) {
+        when (wireFrame.type) {
             MacProtocol.FrameType.HEARTBEAT,
             MacProtocol.FrameType.GOODBYE -> Unit
             MacProtocol.FrameType.SCREEN_FRAME -> {
-                // JPEG bytes from the Mac. Emit to
-                // the screen frame flow for the UI
-                // to render. NOT encrypted for perf.
-                _screenFrames.tryEmit(frame.payload)
+                val key = channelKey ?: run {
+                    Log.w(TAG, "Dropping screen frame before channel keys are ready")
+                    return
+                }
+                val plainFrame = runCatching { key.decrypt(wireFrame.payload) }.getOrElse { error ->
+                    logRejectedScreenFrame("authentication failed bytes=${wireFrame.payload.size} error=${error.message}")
+                    return
+                }
+                val jpeg = MacProtocol.validateScreenJpeg(plainFrame) ?: run {
+                    val start = plainFrame.take(2).joinToString("") { "%02X".format(it) }
+                    val end = plainFrame.takeLast(2).joinToString("") { "%02X".format(it) }
+                    logRejectedScreenFrame("authenticated JPEG incomplete bytes=${plainFrame.size} start=$start end=$end")
+                    return
+                }
+                _screenFrames.tryEmit(jpeg)
+                val frameCount = screenFramesAuthenticated.incrementAndGet()
+                if (frameCount == 1L || frameCount % 120L == 0L) {
+                    Log.i(TAG, "[$sessionId] SCREEN_FRAME authenticated count=$frameCount jpegBytes=${jpeg.size}")
+                }
+            }
+            MacProtocol.FrameType.SCREEN_STATUS -> {
+                val key = channelKey ?: return
+                val plain = runCatching { key.decrypt(wireFrame.payload) }.getOrElse { error ->
+                    Log.w(TAG, "[$sessionId] screen status authentication failed error=${error.message}")
+                    return
+                }
+                val status = plain.firstOrNull()?.let(MacProtocol.ScreenShareStatus::fromWireCode)
+                if (status == null) {
+                    Log.w(TAG, "[$sessionId] unknown screen status payloadBytes=${plain.size}")
+                    return
+                }
+                Log.i(TAG, "[$sessionId] Mac capture status=${status.name}")
+                _screenStatus.tryEmit(status)
             }
             else -> {
-                Log.d(TAG, "Received ${frame.type} (${frame.payload.size} B)")
+                val plainPayload = try {
+                    val key = channelKey ?: error("channel keys are not ready")
+                    key.decrypt(wireFrame.payload)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Dropping unauthenticated ${wireFrame.type} frame: ${e.message}")
+                    return
+                }
+                Log.d(TAG, "Received ${wireFrame.type} (${plainPayload.size} B)")
                 _state.value = MacConnectionState.ReadyEvent(
-                    lastEventDescription = "RX ${frame.type}",
+                    lastEventDescription = "RX ${wireFrame.type}",
                     lastEventAt = System.currentTimeMillis()
                 )
             }
         }
     }
 
+    private fun logRejectedScreenFrame(reason: String) {
+        rejectedScreenFrameCount++
+        if (rejectedScreenFrameCount == 1 || rejectedScreenFrameCount % 60 == 0) {
+            Log.w(TAG, "[$sessionId] rejected screen frames=$rejectedScreenFrameCount last=$reason")
+        }
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private suspend fun writePump(output: java.io.OutputStream) {
         try {
             while (connected.get()) {
@@ -515,6 +621,7 @@ class MacTransport {
                 var inputFrame = inputEvents.tryReceive().getOrNull()
                 while (inputFrame != null) {
                     output.write(inputFrame)
+                    inputFramesWritten.incrementAndGet()
                     inputFrame = inputEvents.tryReceive().getOrNull()
                 }
                 output.flush()
@@ -534,6 +641,7 @@ class MacTransport {
                     kotlinx.coroutines.selects.select<Unit> {
                         inputEvents.onReceive { frame ->
                             output.write(frame)
+                            inputFramesWritten.incrementAndGet()
                             output.flush()
                         }
                         outgoing.onReceive { frame ->
@@ -544,8 +652,23 @@ class MacTransport {
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "writePump: ${e.message}")
+            Log.w(TAG, "[$sessionId] write pump failed error=${e.message}", e)
         }
+    }
+
+    /** Emits low-volume transport health while the session has traffic. */
+    private fun logTransportMetricsIfDue() {
+        val now = SystemClock.elapsedRealtime()
+        val previous = metricsLogAt.get()
+        if (now - previous < 5_000 || !metricsLogAt.compareAndSet(previous, now)) return
+        Log.i(
+            TAG,
+            "[$sessionId] METRICS state=${_state.value::class.simpleName} " +
+                "rxFrames=${inboundFrames.get()} screenFramesOk=${screenFramesAuthenticated.get()} " +
+                "screenWireBytes=${screenBytesReceived.get()} inputQueued=${inputFramesQueued.get()} " +
+                "inputWritten=${inputFramesWritten.get()} inputDropped=${inputFramesDropped.get()} " +
+                "screenRejected=$rejectedScreenFrameCount queuedInputApprox=${(inputFramesQueued.get() - inputFramesWritten.get()).coerceAtLeast(0)}"
+        )
     }
 
     /**

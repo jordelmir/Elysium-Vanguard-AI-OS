@@ -27,6 +27,8 @@ sealed class HubDestination {
     data class Control(val profileId: String) : HubDestination()
 
     object MacDiscovery : HubDestination()
+    /** Restorable route; the pairing secret remains only in the screen's transient state. */
+    object MacInternet : HubDestination()
     data class MacPairing(val host: com.elysium.nexus.ui.mac.DiscoveredHost) : HubDestination()
     data class MacControl(val host: com.elysium.nexus.ui.mac.DiscoveredHost) : HubDestination()
     object UniversalRemote : HubDestination()

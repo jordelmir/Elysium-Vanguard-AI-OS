@@ -60,7 +60,46 @@ import java.nio.ByteOrder
  */
 object MacProtocol {
 
+    enum class ScreenShareStatus(val wireCode: Byte, val userMessage: String) {
+        STREAMING(0x01, "Recibiendo pantalla del Mac"),
+        SCREEN_RECORDING_PERMISSION_REQUIRED(0x02, "Activa Grabación de pantalla para Elysium Nexus en el Mac"),
+        CAPTURE_FAILED(0x03, "macOS no pudo capturar la pantalla; revisa Grabación de pantalla"),
+        STOPPED(0x04, "Compartir pantalla detenido"),
+        ALREADY_STREAMING(0x05, "Ya hay otra sesión recibiendo la pantalla del Mac");
+
+        companion object {
+            fun fromWireCode(code: Byte): ScreenShareStatus? = entries.firstOrNull { it.wireCode == code }
+        }
+    }
+
     const val MAX_FRAME_SIZE: Int = 1_048_576
+
+    /** Opens an authenticated screen frame and rejects incomplete/non-JPEG data. */
+    fun decryptScreenJpeg(
+        encryptedPayload: ByteArray,
+        channelKey: MacCrypto.ChannelKey
+    ): ByteArray? {
+        val jpeg = runCatching { channelKey.decrypt(encryptedPayload) }.getOrNull() ?: return null
+        return validateScreenJpeg(jpeg)
+    }
+
+    fun validateScreenJpeg(jpeg: ByteArray): ByteArray? {
+        if (jpeg.size < 4) return null
+        val startsWithJpegMarker = jpeg[0] == 0xFF.toByte() && jpeg[1] == 0xD8.toByte()
+        if (!startsWithJpegMarker) return null
+
+        // Some ImageIO/ScreenCapture encoders append a small trailer after
+        // JPEG EOI. Requiring FF D9 at the absolute end rejects every valid
+        // frame even though Android's decoder can render it. Find the final
+        // EOI marker in a bounded trailer window and discard bytes after it.
+        val searchStart = (jpeg.size - 64).coerceAtLeast(2)
+        for (index in jpeg.lastIndex - 1 downTo searchStart) {
+            if (jpeg[index] == 0xFF.toByte() && jpeg[index + 1] == 0xD9.toByte()) {
+                return jpeg.copyOf(index + 2)
+            }
+        }
+        return null
+    }
 
     enum class FrameType(val byte: Byte) {
         HELLO(0x01),
@@ -77,7 +116,11 @@ object MacProtocol {
         MEDIA(0x0C),
         SCREEN_REQUEST(0x0D),
         SCREEN_FRAME(0x0E.toByte()),
-        MOUSE_ABS_MOVE(0x0F.toByte());
+        MOUSE_ABS_MOVE(0x0F.toByte()),
+        /** Encrypted capture state returned by the Mac (permission, started, failed, stopped). */
+        SCREEN_STATUS(0x10.toByte()),
+        /** UTF-8 text submitted by the user over the DTLS-protected global DataChannel. */
+        TEXT_INPUT(0x11.toByte());
 
         companion object {
             private val BY_INDEX = entries.associateBy { it.byte }

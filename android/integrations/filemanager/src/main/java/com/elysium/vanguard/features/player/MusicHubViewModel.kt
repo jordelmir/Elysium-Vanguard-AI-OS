@@ -38,6 +38,14 @@ class MusicHubViewModel @Inject constructor(
     private val gson = Gson()
     private val prefs = context.getSharedPreferences("elysium_music_prefs", Context.MODE_PRIVATE)
 
+    /** Durable, corruption tolerant local storage for the client playlists. */
+    private val playlistStore = PlaylistStore(SharedPreferencesPlaylistStorage(prefs))
+
+    companion object {
+        /** Maximum length of a playlist name. */
+        const val MAX_PLAYLIST_NAME = 48
+    }
+
     val exoPlayer = ExoPlayer.Builder(context).build()
 
     private val _songs = MutableStateFlow<List<MusicTrack>>(emptyList())
@@ -45,6 +53,13 @@ class MusicHubViewModel @Inject constructor(
 
     private val _playlists = MutableStateFlow<List<Playlist>>(emptyList())
     val playlists: StateFlow<List<Playlist>> = _playlists.asStateFlow()
+
+    /**
+     * Non null when the local store had to recover something on load. The
+     * client is told instead of silently losing data.
+     */
+    private val _playlistStoreNotice = MutableStateFlow<String?>(null)
+    val playlistStoreNotice: StateFlow<String?> = _playlistStoreNotice.asStateFlow()
 
     private val _favorites = MutableStateFlow<Set<Long>>(emptySet())
     val favorites: StateFlow<Set<Long>> = _favorites.asStateFlow()
@@ -500,30 +515,73 @@ class MusicHubViewModel @Inject constructor(
         prefs.edit().putString("recents", gson.toJson(list)).apply()
     }
 
+    // ══════════════════════════════════════════════════════════════════
     // PLAYLIST MANAGEMENT
+    //
+    // Playlists live in the local PlaylistStore: one key per playlist, with a
+    // backup of the previous good copy and a transparent migration of the
+    // legacy single-blob format. A playlist is only removed when the client
+    // explicitly deletes it.
+    // ══════════════════════════════════════════════════════════════════
+
     private fun loadPlaylists() {
-        val playlistJson = prefs.getString("playlists", "[]")
-        val type = object : TypeToken<List<Playlist>>() {}.type
-        val playlistList: List<Playlist> = gson.fromJson(playlistJson, type) ?: emptyList()
-        _playlists.value = playlistList
+        val result = playlistStore.load()
+        _playlists.value = result.playlists
+        _playlistStoreNotice.value = when {
+            result.lost > 0 ->
+                "RECOVERED ${result.recovered} LISTA(S) · ${result.lost} NO SE PUDO LEER (COPIA RESERVADA)"
+            result.recovered > 0 ->
+                "SE RECUPERARON ${result.recovered} LISTA(S) DESDE LA COPIA DE SEGURIDAD"
+            result.migrated > 0 ->
+                "MIGRADAS ${result.migrated} LISTA(S) AL ALMACENAMIENTO LOCAL"
+            else -> null
+        }
     }
 
-    fun createPlaylist(name: String) {
-        val newList = _playlists.value.toMutableList()
-        newList.add(Playlist(id = System.currentTimeMillis(), name = name, tracks = emptyList()))
+    /**
+     * Validates a playlist name. Returns null when the name is acceptable.
+     */
+    fun playlistNameError(name: String, exceptId: Long? = null): String? {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return "EL NOMBRE ES OBLIGATORIO"
+        if (trimmed.length > MAX_PLAYLIST_NAME) return "MAXIMO $MAX_PLAYLIST_NAME CARACTERES"
+        if (_playlists.value.any { it.id != exceptId && it.name.equals(trimmed, ignoreCase = true) }) {
+            return "YA EXISTE UNA LISTA CON ESE NOMBRE"
+        }
+        return null
+    }
+
+    /**
+     * Creates a playlist and returns its id, or null when the name was not
+     * accepted. The playlist is stored locally right away.
+     */
+    fun createPlaylist(name: String): Long? {
+        val trimmed = name.trim()
+        if (playlistNameError(trimmed) != null) return null
+        val id = System.currentTimeMillis()
+        val newList = _playlists.value + Playlist(
+            id = id,
+            name = trimmed,
+            tracks = emptyList()
+        )
         savePlaylists(newList)
+        return id
     }
 
-    fun renamePlaylist(id: Long, newName: String) {
+    fun renamePlaylist(id: Long, newName: String): Boolean {
+        val trimmed = newName.trim()
+        if (playlistNameError(trimmed, exceptId = id) != null) return false
         val newList = _playlists.value.map {
-            if (it.id == id) it.copy(name = newName) else it
+            if (it.id == id) it.copy(name = trimmed) else it
         }
         savePlaylists(newList)
+        return true
     }
 
     fun deletePlaylist(id: Long) {
         val newList = _playlists.value.filter { it.id != id }
         savePlaylists(newList)
+        playlistStore.delete(id)
     }
 
     fun addTrackToPlaylist(playlistId: Long, track: MusicTrack) {
@@ -548,7 +606,9 @@ class MusicHubViewModel @Inject constructor(
 
     private fun savePlaylists(list: List<Playlist>) {
         _playlists.value = list
-        prefs.edit().putString("playlists", gson.toJson(list)).apply()
+        // Durable write: every playlist lands in its own key, and the previous
+        // good copy is kept so a corrupted write can be rolled back.
+        list.forEach { playlistStore.save(it) }
 
         // Update selection if it was deleted or changed
         val currentSelectedId = _selectedPlaylist.value?.id
@@ -561,9 +621,3 @@ class MusicHubViewModel @Inject constructor(
         _selectedPlaylist.value = playlist
     }
 }
-
-data class Playlist(
-    val id: Long,
-    val name: String,
-    val tracks: List<MusicTrack>
-)

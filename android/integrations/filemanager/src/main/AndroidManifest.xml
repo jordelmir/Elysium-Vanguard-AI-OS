@@ -16,5 +16,7 @@
         </provider>
         <service android:name="com.elysium.vanguard.core.services.CompressionService"
             android:exported="false" android:foregroundServiceType="dataSync" />
+        <service android:name="com.elysium.vanguard.core.services.ArchiveService"
+            android:exported="false" android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

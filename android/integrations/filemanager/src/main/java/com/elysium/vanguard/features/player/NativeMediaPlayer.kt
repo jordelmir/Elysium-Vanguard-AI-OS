@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,6 +30,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -56,6 +58,11 @@ fun NativeMediaPlayer(
     // Skip feedback state
     var skipFeedbackText by remember { mutableStateOf("") }
     var showSkipFeedback by remember { mutableStateOf(false) }
+
+    // BUG FIX: the auto hide used to be keyed on a Boolean. Pressing the skip button
+    // again while the badge was still visible did not restart the timer, so the "+10s"
+    // badge could stay on screen. A monotonic token restarts the timer on EVERY press.
+    var skipFeedbackToken by remember { mutableIntStateOf(0) }
 
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
@@ -96,9 +103,9 @@ fun NativeMediaPlayer(
         showControls = false
     }
 
-    // SKIP FEEDBACK auto-hide
-    LaunchedEffect(showSkipFeedback) {
-        if (showSkipFeedback) {
+    // SKIP FEEDBACK auto-hide: keyed on a token so every press restarts the timer.
+    LaunchedEffect(skipFeedbackToken) {
+        if (skipFeedbackToken > 0) {
             kotlinx.coroutines.delay(800)
             showSkipFeedback = false
         }
@@ -120,10 +127,12 @@ fun NativeMediaPlayer(
     }
 
     fun seekRelative(deltaMs: Long) {
-        val newPos = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, exoPlayer.duration.coerceAtLeast(0L))
+        val duration = exoPlayer.duration.coerceAtLeast(0L)
+        val newPos = (exoPlayer.currentPosition + deltaMs).coerceIn(0L, duration)
         exoPlayer.seekTo(newPos)
         skipFeedbackText = if (deltaMs > 0) "+${deltaMs / 1000}s" else "${deltaMs / 1000}s"
         showSkipFeedback = true
+        skipFeedbackToken++          // restarts the auto-hide timer on every press
         showControls = true
         lastInteractionTime = System.currentTimeMillis()
     }
@@ -181,8 +190,8 @@ fun NativeMediaPlayer(
             // ═══════════════════════════════════════
             AnimatedVisibility(
                 visible = showSkipFeedback,
-                enter = fadeIn(),
-                exit = fadeOut(),
+                enter = fadeIn(tween(120)),
+                exit = fadeOut(tween(180)),
                 modifier = Modifier.align(Alignment.Center)
             ) {
                 Box(
@@ -228,7 +237,7 @@ fun NativeMediaPlayer(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(onClick = onBack) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                         }
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
@@ -479,7 +488,7 @@ fun NativeMediaPlayer(
                     .statusBarsPadding()
                     .premiumGlass(cornerRadius = 12.dp)
             ) {
-                Icon(Icons.Default.ArrowBack, contentDescription = null, tint = Color.White)
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, tint = Color.White)
             }
         }
     }

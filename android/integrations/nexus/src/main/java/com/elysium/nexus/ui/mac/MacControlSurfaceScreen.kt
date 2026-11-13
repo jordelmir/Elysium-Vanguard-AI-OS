@@ -1,5 +1,7 @@
 package com.elysium.nexus.ui.mac
 
+import android.content.Intent
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -40,6 +42,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Backspace
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -80,6 +83,7 @@ import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -253,39 +257,88 @@ fun MacControlSurfaceScreen(
     var isFullScreenView by remember { mutableStateOf(false) }
     // Drag state: true while long-press drag is active on trackpad
     var isDragging by remember { mutableStateOf(false) }
+    // Selection lock state: when true, Left Mouse stays pressed (DOWN) for dragging or multi-selection
+    var isSelectLocked by remember { mutableStateOf(false) }
     // System keyboard (Android IME) overlay
     var showSystemKeyboard by remember { mutableStateOf(false) }
     var systemTextInput by remember { mutableStateOf("") }
     // Haptic feedback reference
     val view = LocalView.current
+    val context = LocalContext.current
     // Interactive Zoom and Pan state for 1080p screen preview
     var zoomScale by remember { mutableStateOf(1.0f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
     var latestScreenBitmap by remember {
         mutableStateOf<android.graphics.Bitmap?>(null)
     }
-    // Collect screen frames from the transport.
+    var renderedFrameCount by remember(transport) { mutableStateOf(0) }
+    var failedFrameCount by remember(transport) { mutableStateOf(0) }
+    var screenShareStatus by remember { mutableStateOf<MacProtocol.ScreenShareStatus?>(null) }
+    LaunchedEffect(transport) {
+        screenShareStatus = null
+        transport?.screenStatus?.collect { status ->
+            screenShareStatus = status
+            android.util.Log.i("MacControlSurface", "Screen share status=${status.name}")
+        }
+    }
+    // Collect screen frames from the transport with RGB_565 fast decoding.
     LaunchedEffect(transport, screenMirrorEnabled) {
         if (transport != null && screenMirrorEnabled) {
+            latestScreenBitmap = null
+            screenShareStatus = null
+            android.util.Log.i("MacControlSurface", "Requesting Mac screen capture")
             transport.sendScreenRequest(true)
+            val decodeOptions = BitmapFactory.Options().apply {
+                inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+            }
             transport.screenFrames.collect { jpegBytes ->
                 val bmp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
                     try {
-                        BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                        BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decodeOptions)
                     } catch (_: Throwable) {
                         null
                     }
                 }
-                if (bmp != null) latestScreenBitmap = bmp
+                if (bmp != null) {
+                    latestScreenBitmap = bmp
+                    renderedFrameCount += 1
+                    if (renderedFrameCount == 1 || renderedFrameCount % 120 == 0) {
+                        android.util.Log.i(
+                            "MacControlSurface",
+                            "SCREEN_RENDERED count=$renderedFrameCount resolution=${bmp.width}x${bmp.height} jpegBytes=${jpegBytes.size}"
+                        )
+                    }
+                } else {
+                    failedFrameCount += 1
+                    if (failedFrameCount == 1 || failedFrameCount % 30 == 0) {
+                        android.util.Log.w("MacControlSurface", "SCREEN_RENDER_FAILED count=$failedFrameCount reason=bitmap_decode_null jpegBytes=${jpegBytes.size}")
+                    }
+                }
             }
         } else if (transport != null && !screenMirrorEnabled) {
             transport.sendScreenRequest(false)
+            latestScreenBitmap = null
         }
     }
-    // Stop screen capture on disposal.
+
+    // Interactive system notification showing live session on Android
+    LaunchedEffect(transport, screenMirrorEnabled) {
+        val state = transport?.state?.value
+        if (state is com.elysium.nexus.core.transport.mac.MacConnectionState.Ready) {
+            com.elysium.nexus.core.transport.mac.MacControlNotificationManager.showConnectedNotification(
+                context = context,
+                hostName = host.name,
+                hostIp = host.host,
+                isScreenMirroring = screenMirrorEnabled
+            )
+        }
+    }
+
+    // Stop screen capture and dismiss notification on disposal.
     DisposableEffect(Unit) {
         onDispose {
             transport?.sendScreenRequest(false)
+            com.elysium.nexus.core.transport.mac.MacControlNotificationManager.dismissNotification(context)
         }
     }
 
@@ -324,6 +377,37 @@ fun MacControlSurfaceScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(ElysiumColors.NeonCyan.copy(alpha = 0.55f))
+                            .clickable {
+                                view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                                runCatching {
+                                    context.startActivity(
+                                        Intent().setClassName(
+                                            context.packageName,
+                                            "com.jsm.core.MainActivity"
+                                        )
+                                    )
+                                }.onFailure {
+                                    Toast.makeText(
+                                        context,
+                                        "ScreenMirror no está disponible en esta instalación de Elysium.",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.Cast,
+                            contentDescription = "Compartir pantalla del Android al Mac",
+                            tint = Color.White,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
                     NeonChip(
                         label = if (isFullScreenView) "⌨ VER TECLADO" else "🖥 PANTALLA FULL",
                         onClick = {
@@ -374,15 +458,14 @@ fun MacControlSurfaceScreen(
             ) {
                 Trackpad(
                     onMouseMove = { dx, dy, nx, ny ->
-                        // Relative mouse movement
-                        val factor = 0.006f
-                        cursorX = (cursorX + dx * factor).coerceIn(0f, 1f)
-                        cursorY = (cursorY + dy * factor).coerceIn(0f, 1f)
+                        // Direct-touch gestures report absolute coordinates over the live Mac image.
+                        cursorX = nx.coerceIn(0f, 1f)
+                        cursorY = ny.coerceIn(0f, 1f)
                         lastEvent = MacInputEvent(
                             type = EventType.MOUSE_MOVE,
                             shortLabel = "Trackpad (${dx.roundToInt()}, ${dy.roundToInt()})"
                         )
-                        transport?.sendMouseMove(dx, dy)
+                        transport?.sendMouseAbsMove(cursorX, cursorY)
                         if (zoomScale > 1.05f) {
                             panOffset = Offset(0.5f - cursorX, 0.5f - cursorY)
                         }
@@ -401,20 +484,32 @@ fun MacControlSurfaceScreen(
                         }
                     },
                     onLeftClick = { x, y ->
+                        if (isDirectTouchMode) {
+                            cursorX = x.coerceIn(0f, 1f)
+                            cursorY = y.coerceIn(0f, 1f)
+                            transport?.sendMouseAbsMove(cursorX, cursorY)
+                        }
                         ripples.add(Ripple(cursorX, cursorY, System.currentTimeMillis()))
                         lastEvent = MacInputEvent(type = EventType.CLICK_LEFT, shortLabel = "Click Izquierdo")
                         transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.DOWN)
                         coroutineScope.launch {
-                            delay(15)
-                            transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.UP)
+                            delay(30)
+                            if (!isSelectLocked) {
+                                transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.UP)
+                            }
                         }
                     },
                     onRightClick = { x, y ->
+                        if (isDirectTouchMode) {
+                            cursorX = x.coerceIn(0f, 1f)
+                            cursorY = y.coerceIn(0f, 1f)
+                            transport?.sendMouseAbsMove(cursorX, cursorY)
+                        }
                         ripples.add(Ripple(cursorX, cursorY, System.currentTimeMillis()))
                         lastEvent = MacInputEvent(type = EventType.CLICK_RIGHT, shortLabel = "Click Derecho")
                         transport?.sendMouseButton(MacProtocol.MouseButton.RIGHT, MacProtocol.ButtonState.DOWN)
                         coroutineScope.launch {
-                            delay(15)
+                            delay(30)
                             transport?.sendMouseButton(MacProtocol.MouseButton.RIGHT, MacProtocol.ButtonState.UP)
                         }
                     },
@@ -449,13 +544,15 @@ fun MacControlSurfaceScreen(
                     onDragStart = {
                         isDragging = true
                         view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                        lastEvent = MacInputEvent(type = EventType.CLICK_LEFT, shortLabel = "⟹ DRAG INICIO")
+                        lastEvent = MacInputEvent(type = EventType.CLICK_LEFT, shortLabel = "⟹ ARRASTRANDO (DRAG)")
                         transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.DOWN)
                     },
                     onDragEnd = {
                         isDragging = false
-                        transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.UP)
-                        lastEvent = MacInputEvent(type = EventType.CLICK_LEFT, shortLabel = "⟹ DRAG FIN")
+                        if (!isSelectLocked) {
+                            transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.UP)
+                        }
+                        lastEvent = MacInputEvent(type = EventType.CLICK_LEFT, shortLabel = "⟹ FIN ARRASTRE")
                     },
                     cursorX = cursorX,
                     cursorY = cursorY,
@@ -483,11 +580,24 @@ fun MacControlSurfaceScreen(
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
-                                .background(if (screenMirrorEnabled) ElysiumColors.NeonGreen.copy(alpha = 0.9f) else ElysiumColors.NeonCyan.copy(alpha = 0.9f))
+                                .background(
+                                    if (screenMirrorEnabled && latestScreenBitmap != null) {
+                                        ElysiumColors.NeonGreen.copy(alpha = 0.9f)
+                                    } else {
+                                        ElysiumColors.NeonOrange.copy(alpha = 0.9f)
+                                    }
+                                )
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(
-                                text = if (screenMirrorEnabled) "● 1080p HD VIVO" else "● TRACKPAD",
+                                text = when {
+                                    !screenMirrorEnabled -> "● TRACKPAD"
+                                    latestScreenBitmap != null -> "● MAC EN VIVO"
+                                    screenShareStatus == MacProtocol.ScreenShareStatus.SCREEN_RECORDING_PERMISSION_REQUIRED -> "● PERMISO DEL MAC"
+                                    screenShareStatus == MacProtocol.ScreenShareStatus.CAPTURE_FAILED -> "● ERROR DE CAPTURA"
+                                    screenShareStatus == MacProtocol.ScreenShareStatus.ALREADY_STREAMING -> "● MAC EN USO"
+                                    else -> "● ESPERANDO MAC"
+                                },
                                 style = TextStyle(
                                     fontSize = 9.sp,
                                     fontWeight = FontWeight.Black,
@@ -661,6 +771,59 @@ fun MacControlSurfaceScreen(
                             text = "BOTÓN IZQUIERDO",
                             style = TextStyle(fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, letterSpacing = 1.sp),
                             color = ElysiumColors.NeonCyan
+                        )
+                    }
+                }
+
+                // BOTÓN SELECCIONAR / ARRASTRAR (LOCK / UNLOCK)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(42.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            brush = Brush.verticalGradient(
+                                if (isSelectLocked) listOf(
+                                    ElysiumColors.NeonOrange.copy(alpha = 0.45f),
+                                    ElysiumColors.SurfaceHigh
+                                ) else listOf(
+                                    ElysiumColors.NeonGreen.copy(alpha = 0.2f),
+                                    ElysiumColors.SurfaceHigh
+                                )
+                            )
+                        )
+                        .border(
+                            width = 1.5.dp,
+                            color = if (isSelectLocked) ElysiumColors.NeonOrange else ElysiumColors.NeonGreen,
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                        .clickable {
+                            isSelectLocked = !isSelectLocked
+                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                            if (isSelectLocked) {
+                                lastEvent = MacInputEvent(type = EventType.CLICK_LEFT, shortLabel = "🔒 MODO ARRASTRE ON")
+                                transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.DOWN)
+                            } else {
+                                lastEvent = MacInputEvent(type = EventType.CLICK_LEFT, shortLabel = "🔓 ARRASTRE OFF")
+                                transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.UP)
+                            }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (isSelectLocked) Icons.Filled.RadioButtonChecked else Icons.Filled.OpenWith,
+                            contentDescription = null,
+                            tint = if (isSelectLocked) ElysiumColors.NeonOrange else ElysiumColors.NeonGreen,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Text(
+                            text = if (isSelectLocked) "ARRAS. ON" else "SELECCIONAR",
+                            style = TextStyle(fontSize = 10.sp, fontWeight = FontWeight.Black, letterSpacing = 0.5.sp),
+                            color = if (isSelectLocked) ElysiumColors.NeonOrange else ElysiumColors.NeonGreen
                         )
                     }
                 }
@@ -1044,6 +1207,7 @@ private fun Trackpad(
                     var totalDrag = Offset.Zero
                     var initialPinchDistance: Float? = null
                     var isLongPressDrag = false
+                    android.util.Log.d("MacTrackpad", "GESTURE_BEGIN pointers=${currentEvent.changes.size} directTouch=$currentDirectTouch")
 
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Main)
@@ -1061,6 +1225,10 @@ private fun Trackpad(
                                 break
                             }
                             val duration = System.currentTimeMillis() - startTime
+                            android.util.Log.d(
+                                "MacTrackpad",
+                                "GESTURE_END durationMs=$duration peakPointers=$peakPointerCount moved=${!isTap} dragX=${totalDrag.x.toInt()} dragY=${totalDrag.y.toInt()}"
+                            )
                             if (isTap && duration < 300 && totalDrag.getDistance() < 20f) {
                                 val tapPos = firstDown.position
                                 val (nx, ny) = calculateNormalizedTouch(
@@ -1112,6 +1280,14 @@ private fun Trackpad(
                             isTap = false
                         }
                         totalDrag += frameDrag
+
+                        // Trigger Long-Press Drag if held >= 280ms with minimal initial movement
+                        val elapsed = System.currentTimeMillis() - startTime
+                        if (pressedPointers.size == 1 && !isLongPressDrag && elapsed >= 280 && totalDrag.getDistance() < 22f) {
+                            isLongPressDrag = true
+                            isTap = false
+                            onDragStart()
+                        }
 
                         when (pressedPointers.size) {
                             1 -> {

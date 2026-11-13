@@ -138,15 +138,10 @@ fun MacPairingScreen(
                 }
                 is MacConnectionState.AwaitingPin -> {
                     state = PairingState.AWAITING_PIN
-                    scope.launch {
-                        try {
-                            transport.sendPin("000000")
-                        } catch (_: Throwable) {}
-                    }
                 }
                 is MacConnectionState.Ready -> {
                     state = PairingState.CONNECTED
-                    delay(1200)
+                    delay(400)
                     onPaired()
                 }
                 is MacConnectionState.Error -> {
@@ -708,6 +703,11 @@ private fun ErrorContent(
                 label = "Reintentar",
                 onClick = onRetry,
                 accent = ElysiumColors.NeonCyan
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            MacAgentDownloadGuide(
+                isInitiallyExpanded = false,
+                onRetryScan = onRetry
             )
         }
     }

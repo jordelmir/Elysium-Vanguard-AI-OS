@@ -84,6 +84,8 @@ fun HomeScreen(
     val isRecording by RecordingService.isRecording.collectAsState()
     val elapsedSeconds by RecordingService.elapsedSeconds.collectAsState()
     val currentType by RecordingService.currentRecordingType.collectAsState()
+    val isDualCamera by RecordingService.isDualCamera.collectAsState()
+    val dualCameraStatus by RecordingService.dualCameraStatus.collectAsState()
     val haptics = LocalHapticFeedback.current
     val configuration = LocalConfiguration.current
     val isLargeScreen = configuration.screenWidthDp > 600
@@ -245,6 +247,8 @@ fun HomeScreen(
             // LIVE EVIDENCE PREVIEW (Controlled Height to prevent overlap)
             LivePreview(
                 isRecording = isRecording,
+                isDualCamera = isDualCamera,
+                dualCameraStatus = dualCameraStatus,
                 recordingType = currentType,
                 modifier = Modifier
                     .fillMaxWidth(previewWidthFraction)
@@ -283,7 +287,13 @@ fun HomeScreen(
 }
 
 @Composable
-fun LivePreview(isRecording: Boolean, recordingType: RecordingType?, modifier: Modifier = Modifier) {
+fun LivePreview(
+    isRecording: Boolean,
+    recordingType: RecordingType?,
+    isDualCamera: Boolean = false,
+    dualCameraStatus: String? = null,
+    modifier: Modifier = Modifier
+) {
     val lifecycleOwner = LocalLifecycleOwner.current
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
 
@@ -325,6 +335,51 @@ fun LivePreview(isRecording: Boolean, recordingType: RecordingType?, modifier: M
         )
 
         if (isRecording) {
+            // DUAL CAMERA: the front and the rear are being recorded at the
+            // same time, each into its own file. There is no single preview
+            // surface in this mode, so the state is stated plainly.
+            if (isDualCamera) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.72f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = Icons.Default.CameraAlt,
+                            contentDescription = null,
+                            tint = MatrixGreen,
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "GRABACION SIMULTANEA",
+                            color = MatrixGreen,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.sp
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "CAMARA DELANTERA + TRASERA",
+                            color = MatrixGreen.copy(alpha = 0.7f),
+                            fontSize = 10.sp,
+                            letterSpacing = 1.sp
+                        )
+                        if (dualCameraStatus != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                dualCameraStatus,
+                                color = RecordingRed,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+
             if (recordingType == RecordingType.AUDIO) {
                 // Dim the camera if it's Audio mode to make it clear we are only recording audio
                 Box(

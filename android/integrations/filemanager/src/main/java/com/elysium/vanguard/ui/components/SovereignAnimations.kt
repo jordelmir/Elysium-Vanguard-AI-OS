@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -381,11 +382,16 @@ fun ColorCustomizerIcon(
 
 /**
  * COLOR SELECTION DIALOG — Premium glass dialog for picking accent colors.
+ *
+ * The selection is GLOBAL by default: the chosen color becomes the theme of
+ * the whole app. Turning the global switch off applies the color to this
+ * section only, and a global selection can always be refined later with an
+ * individual one.
  */
 @Composable
 fun ColorSelectionDialog(
     sectionName: String,
-    onColorSelected: (Color) -> Unit,
+    onColorSelected: (Color, Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     val colors = listOf(
@@ -397,30 +403,45 @@ fun ColorSelectionDialog(
         TitanColors.PlasmaPurple,
         TitanColors.AbsoluteWhite
     )
+    val currentAccent = SectionColorManager.accentFor(sectionName)
+    val hasIndividual = SectionColorManager.hasOverride(sectionName)
+
+    // GLOBAL BY DEFAULT: the selection drives the whole app unless the user
+    // explicitly turns it off for an individual section.
+    var applyToAll by remember { mutableStateOf(true) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = TitanColors.AbsoluteBlack.copy(alpha = 0.95f),
         title = {
-            Text(
-                "SELECT $sectionName ACCENT",
-                color = TitanColors.AbsoluteWhite,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 2.sp
-            )
+            Column {
+                Text(
+                    "SELECT $sectionName ACCENT",
+                    color = TitanColors.AbsoluteWhite,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 2.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    if (applyToAll) "GLOBAL THEME · TODAS LAS SECCIONES" else "SOLO $sectionName",
+                    color = if (applyToAll) TitanColors.NeonCyan else TitanColors.NeonYellow,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
         },
         text = {
             Column {
                 Text(
-                    "Standardize your Section Identity",
+                    "GLOBAL por defecto · APAGADO = SOLO ESTA SECCIÓN",
                     color = Color.White.copy(alpha = 0.5f),
                     fontSize = 12.sp,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
 
-                // APPLY TO ALL TOGGLE
-                var applyToAll by remember { mutableStateOf(false) }
+                // GLOBAL TOGGLE
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -473,22 +494,49 @@ fun ColorSelectionDialog(
                     )
                 }
 
-                // COLOR GRID
+                // COLOR GRID — the active color is ringed so the current
+                // selection is always visible.
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
                     colors.forEach { color ->
+                        val isActive = color.toArgb() == currentAccent.toArgb()
                         Box(
                             modifier = Modifier
                                 .size(40.dp)
                                 .clip(CircleShape)
                                 .background(color)
                                 .clickable {
-                                    SectionColorManager.updateAccent(sectionName, color, applyToAll)
+                                    // Apply for real: the screen decides what a
+                                    // global or individual selection means.
+                                    onColorSelected(color, applyToAll)
                                     onDismiss()
                                 }
-                                .border(2.dp, Color.White.copy(alpha = 0.2f), CircleShape)
+                                .border(
+                                    width = if (isActive) 3.dp else 2.dp,
+                                    color = if (isActive) Color.White else Color.White.copy(alpha = 0.2f),
+                                    shape = CircleShape
+                                )
+                        )
+                    }
+                }
+
+                // INDIVIDUAL OVERRIDE: go back to the global theme.
+                if (hasIndividual) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    TextButton(
+                        onClick = {
+                            SectionColorManager.clearOverride(sectionName)
+                            onDismiss()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "VOLVER AL TEMA GLOBAL",
+                            color = TitanColors.NeonYellow,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
                         )
                     }
                 }

@@ -79,58 +79,6 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     private var principalAtOpen: String? = null
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val granted = permissions.count { it.value }
-        val denied = permissions.count { !it.value }
-        com.elysium.vanguard.recordshield.util.SafeLog.i("MainActivity", "Permissions: $granted granted, $denied denied")
-    }
-
-    // Google Sign-In launcher
-    private val googleSignInLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
-        val account = GoogleDriveAuth.handleSignInResult(task)
-        if (account != null) {
-            val authCode = account.serverAuthCode
-            if (authCode != null) {
-                com.elysium.vanguard.recordshield.util.SafeLog.i("MainActivity", "Got auth code, exchanging for tokens...")
-                // Exchange auth code for real access_token on background thread
-                lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    val tokenResult = GoogleDriveAuth.exchangeAuthCodeForTokens(authCode, this@MainActivity)
-                    if (tokenResult != null) {
-                        val secureStorage = com.elysium.vanguard.recordshield.data.local.SecureStorage(this@MainActivity)
-                        secureStorage.googleDriveAccessToken = tokenResult.accessToken
-                        tokenResult.refreshToken?.let { secureStorage.googleDriveRefreshToken = it }
-                        secureStorage.selectedCloudProvider = "google_drive"
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            android.widget.Toast.makeText(
-                                this@MainActivity,
-                                "Google Drive connected: ${account.email}",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                        com.elysium.vanguard.recordshield.util.SafeLog.i("RecordShield", "DRIVE_TOKEN_STORED")
-                    } else {
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            android.widget.Toast.makeText(
-                                this@MainActivity,
-                                "Token exchange failed. Check logs.",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }
-                }
-            } else {
-                android.widget.Toast.makeText(this, "No auth code received. Check Google Cloud Console config.", android.widget.Toast.LENGTH_LONG).show()
-            }
-        } else {
-            android.widget.Toast.makeText(this, "Google Sign-In failed or cancelled", android.widget.Toast.LENGTH_SHORT).show()
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
@@ -146,32 +94,12 @@ class MainActivity : ComponentActivity() {
         }
         com.elysium.vanguard.recordshield.service.StealthNotificationManager.createStealthChannel(this)
         enableEdgeToEdge()
-        requestRequiredPermissions()
         UploadWorker.schedulePeriodicUpload(this)
 
         setContent {
-            RecordShieldTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = DeepBlack
-                ) {
-                    Column {
-                        TextButton(onClick = { finish() }) { Text("← Volver a Elysium") }
-                        androidx.compose.foundation.layout.Box(Modifier.weight(1f)) {
-                            RecordShieldApp(
-                                onGoogleDriveSetup = {
-                                    if (com.elysium.vanguard.recordshield.BuildConfig.OAUTH_CLIENT_ID.isBlank()) {
-                                        android.widget.Toast.makeText(this@MainActivity, "Google Drive aún no está configurado", android.widget.Toast.LENGTH_LONG).show()
-                                    } else {
-                                        val signInClient = GoogleDriveAuth.getSignInClient(this@MainActivity)
-                                        googleSignInLauncher.launch(signInClient.signInIntent)
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
-            }
+            // The whole experience lives in RecordShieldSection, which the host
+            // app can also embed as a native section. One implementation.
+            RecordShieldSection(onBack = { finish() })
         }
     }
 
@@ -179,21 +107,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
     }
 
-    private fun requestRequiredPermissions() {
-        val permissions = mutableListOf(
-            Manifest.permission.CAMERA,
-            Manifest.permission.RECORD_AUDIO,
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        val notGranted = permissions.filter {
-            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (notGranted.isNotEmpty()) {
-            permissionLauncher.launch(notGranted.toTypedArray())
-        }
-    }
 }
 
 /**

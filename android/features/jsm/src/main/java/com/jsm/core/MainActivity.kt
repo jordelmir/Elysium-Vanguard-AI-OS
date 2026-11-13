@@ -61,6 +61,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "ElysiumMainActivity"
+        const val ACTION_STOP_SCREEN_SHARE = "com.jsm.core.action.STOP_SCREEN_SHARE"
     }
 
     private lateinit var nsdBroadcaster: NsdBroadcaster
@@ -70,26 +71,47 @@ class MainActivity : ComponentActivity() {
     private var signalingServer: SignalingServer? = null
     private var foldMonitorJob: Job? = null
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            requestScreenCaptureConsent()
+        } else {
+            isBroadcastingState.value = false
+            stopPipeline()
+            connectionState.value = "NOTIFICATION_PERMISSION_REQUIRED"
+        }
+    }
+
     @android.annotation.SuppressLint("InvalidFragmentVersionForActivityResult")
     private val mediaProjectionLauncher = registerForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == RESULT_OK && result.data != null) {
             lifecycleScope.launch {
-                var waited = 0
-                while (!CaptureForegroundService.isForegroundActive && waited < 2000) {
-                    kotlinx.coroutines.delay(100)
-                    waited += 100
-                }
                 try {
+                    // Start only after the user accepts Android's capture prompt.
+                    CaptureForegroundService.isForegroundActive = false
+                    startForegroundService(Intent(this@MainActivity, CaptureForegroundService::class.java))
+                    var waited = 0
+                    while (!CaptureForegroundService.isForegroundActive && waited < 3000) {
+                        kotlinx.coroutines.delay(100)
+                        waited += 100
+                    }
+                    check(CaptureForegroundService.isForegroundActive) {
+                        "Android no pudo iniciar el servicio de captura en primer plano. Vuelve a intentar."
+                    }
                     bootFullPipeline(result.data!!)
                 } catch (t: Throwable) {
                     Log.e(TAG, "Failed to initialize WebRTC pipeline", t)
+                    isBroadcastingState.value = false
+                    stopPipeline()
                     connectionState.value = "ERROR: ${t.message}"
                 }
             }
         } else {
             isBroadcastingState.value = false
+            stopPipeline()
             connectionState.value = "PERMISSION_DENIED"
         }
     }
@@ -136,21 +158,35 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+        if (intent?.action == ACTION_STOP_SCREEN_SHARE) {
+            isBroadcastingState.value = false
+            stopPipeline()
+        }
     }
 
     private fun startMediaProjectionRequest() {
         try {
-            // Start foreground service FIRST (required on Android 14+)
-            CaptureForegroundService.isForegroundActive = false
-            val serviceIntent = Intent(this, CaptureForegroundService::class.java)
-            startForegroundService(serviceIntent)
-            
-            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    this,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            ) {
+                connectionState.value = "NOTIFICATION_PERMISSION_REQUIRED"
+                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                requestScreenCaptureConsent()
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start ScreenMirror", e)
             connectionState.value = "ERROR: ${e.message}"
         }
+    }
+
+    private fun requestScreenCaptureConsent() {
+        val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjectionLauncher.launch(mediaProjectionManager.createScreenCaptureIntent())
     }
 
     private fun bootFullPipeline(projectionData: Intent) {
@@ -500,7 +536,11 @@ class MainActivity : ComponentActivity() {
                             )
                             Column {
                                 Text(
-                                    text = connState.replace("_", " "),
+                                    text = if (connState == "NOTIFICATION_PERMISSION_REQUIRED") {
+                                        "NOTIFICACIONES REQUERIDAS"
+                                    } else {
+                                        connState.replace("_", " ")
+                                    },
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Black,
                                     fontFamily = FontFamily.Monospace,
@@ -512,6 +552,7 @@ class MainActivity : ComponentActivity() {
                                         "WAITING_FOR_MAC" -> "Servidor TCP activo en puerto 9999"
                                         "NEGOTIATING" -> "Intercambiando SDP + ICE candidates..."
                                         "MAC_DISCONNECTED" -> "Esperando reconexión automática..."
+                                        "NOTIFICATION_PERMISSION_REQUIRED" -> "Permite las notificaciones para iniciar la captura de pantalla."
                                         else -> "Inicializando subsistemas..."
                                     },
                                     fontSize = 9.sp,
@@ -748,6 +789,7 @@ class MainActivity : ComponentActivity() {
         "STREAMING" -> Color(0xFF00E676)
         "NEGOTIATING", "WAITING_FOR_MAC" -> Color(0xFF00E5FF)
         "INITIALIZING" -> Color(0xFFFFAB00)
+        "NOTIFICATION_PERMISSION_REQUIRED" -> Color(0xFFFFAB00)
         "FAILED", "PERMISSION_DENIED" -> Color(0xFFFF1744)
         "MAC_DISCONNECTED" -> Color(0xFFFF6D00)
         "DISCONNECTED" -> Color(0xFFFF6D00)
@@ -757,5 +799,14 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopPipeline()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.action == ACTION_STOP_SCREEN_SHARE) {
+            isBroadcastingState.value = false
+            stopPipeline()
+        }
     }
 }
