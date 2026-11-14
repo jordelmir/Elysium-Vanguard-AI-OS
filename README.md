@@ -140,6 +140,18 @@ evidencia remota de PostgreSQL.
 - Los pagos externos requieren una capacidad de proveedor confirmada. Los
   asientos financieros usan importes enteros y un ledger inmutable.
 
+### Elysium Nexus — Control Remoto Universal y Espejo de Pantalla Mac en Vivo (1080p)
+
+- **Transmisión de Pantalla en Tiempo Real:** Espejo 1080p a 24–30 FPS mediante canal TCP seguro en puerto 7878 con autenticación X25519 y PIN de 6 dígitos efímero.
+- **Trackpad de Alta Fidelidad & Gestos Apple:**
+  - Control de cursor relativo (estilo touchpad de laptop) y directo (toque absoluto 1:1 sobre el escritorio remoto del Mac).
+  - Scroll fluido de 2 dedos, pellizco para zoom (1x a 4x), Mission Control y App Exposé.
+  - Clicks izquierdo y derecho ultra-precisos: tap de dos dedos con debounce calibrado (70ms) y botón físico dedicado sin duplicación de eventos de sesión ni descarte por WindowServer.
+  - Modo Selección / Arrastre bloqueado (`ARRAS. ON`) para mover ventanas y seleccionar texto con precisión milimétrica.
+- **Apple Magic Keyboard Virtual Propietario:** Soporte completo de modificadores (`⌘ Cmd`, `⌥ Opt`, `⌃ Ctrl`, `⇧ Shift`), combinaciones complejas, inyección UTF-8 y teclas de función.
+- **Notificaciones Interactivas Multiplataforma:** Notificaciones nativas informativas en Mac y Android sobre el estado del enlace, con botón interactivo de reconexión rápida (`🔄 Reconectar`).
+- **Guía de Instalación Paso a Paso Integrada:** Sección interactiva en pantalla de descubrimiento y emparejamiento con enlaces directos para descargar `Elysium-Nexus-Universal-Controller.dmg` desde GitHub Releases, instrucciones de permisos de macOS (Accesibilidad y Grabación de Pantalla) y auto-recuperación.
+
 ### Elysium Safety Scientific Core & Forensic Research Hub
 
 - **Epistemología Forense y Rigor Popperiano:**

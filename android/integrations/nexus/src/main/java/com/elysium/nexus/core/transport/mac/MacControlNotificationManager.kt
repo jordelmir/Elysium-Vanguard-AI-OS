@@ -92,6 +92,21 @@ object MacControlNotificationManager {
         }
     }
 
+    fun showDisconnectedNotification(context: Context, hostName: String) {
+        initChannel(context)
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_menu_close_clear_cancel)
+            .setContentTitle("🔴 Elysium Nexus • Desconectado")
+            .setContentText("La conexión remota con $hostName ha finalizado.")
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+            .build()
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        try {
+            notificationManager.notify(NOTIFICATION_ID + 1, notification)
+        } catch (_: SecurityException) {}
+    }
+
     fun dismissNotification(context: Context) {
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         notificationManager.cancel(NOTIFICATION_ID)

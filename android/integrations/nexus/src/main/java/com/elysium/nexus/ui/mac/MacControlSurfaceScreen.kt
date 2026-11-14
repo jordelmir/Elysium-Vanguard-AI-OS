@@ -56,8 +56,12 @@ import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -321,16 +325,21 @@ fun MacControlSurfaceScreen(
         }
     }
 
+    val connectionState by (transport?.state ?: kotlinx.coroutines.flow.MutableStateFlow(com.elysium.nexus.core.transport.mac.MacConnectionState.Disconnected)).collectAsState()
+
     // Interactive system notification showing live session on Android
-    LaunchedEffect(transport, screenMirrorEnabled) {
-        val state = transport?.state?.value
-        if (state is com.elysium.nexus.core.transport.mac.MacConnectionState.Ready) {
+    LaunchedEffect(connectionState, screenMirrorEnabled) {
+        if (connectionState is com.elysium.nexus.core.transport.mac.MacConnectionState.Ready) {
             com.elysium.nexus.core.transport.mac.MacControlNotificationManager.showConnectedNotification(
                 context = context,
                 hostName = host.name,
                 hostIp = host.host,
                 isScreenMirroring = screenMirrorEnabled
             )
+        } else if (connectionState is com.elysium.nexus.core.transport.mac.MacConnectionState.Disconnected ||
+                   connectionState is com.elysium.nexus.core.transport.mac.MacConnectionState.Error) {
+            com.elysium.nexus.core.transport.mac.MacControlNotificationManager.dismissNotification(context)
+            com.elysium.nexus.core.transport.mac.MacControlNotificationManager.showDisconnectedNotification(context, host.name)
         }
     }
 
@@ -493,7 +502,7 @@ fun MacControlSurfaceScreen(
                         lastEvent = MacInputEvent(type = EventType.CLICK_LEFT, shortLabel = "Click Izquierdo")
                         transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.DOWN)
                         coroutineScope.launch {
-                            delay(30)
+                            delay(50)
                             if (!isSelectLocked) {
                                 transport?.sendMouseButton(MacProtocol.MouseButton.LEFT, MacProtocol.ButtonState.UP)
                             }
@@ -509,7 +518,7 @@ fun MacControlSurfaceScreen(
                         lastEvent = MacInputEvent(type = EventType.CLICK_RIGHT, shortLabel = "Click Derecho")
                         transport?.sendMouseButton(MacProtocol.MouseButton.RIGHT, MacProtocol.ButtonState.DOWN)
                         coroutineScope.launch {
-                            delay(30)
+                            delay(70)
                             transport?.sendMouseButton(MacProtocol.MouseButton.RIGHT, MacProtocol.ButtonState.UP)
                         }
                     },
@@ -581,7 +590,7 @@ fun MacControlSurfaceScreen(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
                                 .background(
-                                    if (screenMirrorEnabled && latestScreenBitmap != null) {
+                                    if (connectionState is com.elysium.nexus.core.transport.mac.MacConnectionState.Ready && screenMirrorEnabled && latestScreenBitmap != null) {
                                         ElysiumColors.NeonGreen.copy(alpha = 0.9f)
                                     } else {
                                         ElysiumColors.NeonOrange.copy(alpha = 0.9f)
@@ -591,6 +600,7 @@ fun MacControlSurfaceScreen(
                         ) {
                             Text(
                                 text = when {
+                                    connectionState !is com.elysium.nexus.core.transport.mac.MacConnectionState.Ready -> "● DESCONECTADO"
                                     !screenMirrorEnabled -> "● TRACKPAD"
                                     latestScreenBitmap != null -> "● MAC EN VIVO"
                                     screenShareStatus == MacProtocol.ScreenShareStatus.SCREEN_RECORDING_PERMISSION_REQUIRED -> "● PERMISO DEL MAC"
@@ -849,6 +859,7 @@ fun MacControlSurfaceScreen(
                                 view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                                 ripples.add(Ripple(cursorX, cursorY, System.currentTimeMillis()))
                                 lastEvent = MacInputEvent(type = EventType.CLICK_RIGHT, shortLabel = "BOTÓN DERECHO")
+                                val pressStart = System.currentTimeMillis()
                                 transport?.sendMouseButton(MacProtocol.MouseButton.RIGHT, MacProtocol.ButtonState.DOWN)
 
                                 while (true) {
@@ -859,7 +870,13 @@ fun MacControlSurfaceScreen(
                                     }
                                 }
 
-                                transport?.sendMouseButton(MacProtocol.MouseButton.RIGHT, MacProtocol.ButtonState.UP)
+                                val pressElapsed = System.currentTimeMillis() - pressStart
+                                coroutineScope.launch {
+                                    if (pressElapsed < 70) {
+                                        delay(70 - pressElapsed)
+                                    }
+                                    transport?.sendMouseButton(MacProtocol.MouseButton.RIGHT, MacProtocol.ButtonState.UP)
+                                }
                             }
                         },
                     contentAlignment = Alignment.Center
@@ -953,6 +970,64 @@ fun MacControlSurfaceScreen(
                 autoFocus = showSystemKeyboard,
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+
+        // === DISCONNECTION BANNER & RECONNECT OVERLAY ===
+        if (connectionState !is com.elysium.nexus.core.transport.mac.MacConnectionState.Ready) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.88f))
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(20.dp))
+                        .background(ElysiumColors.SurfaceHigh)
+                        .border(1.5.dp, ElysiumColors.NeonOrange, RoundedCornerShape(20.dp))
+                        .padding(24.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(64.dp)
+                            .clip(CircleShape)
+                            .background(ElysiumColors.NeonOrange.copy(alpha = 0.2f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = null,
+                            tint = ElysiumColors.NeonOrange,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                    Text(
+                        text = "Conexión Finalizada",
+                        style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Text(
+                        text = "El Mac cerró la sesión o se reinició. Toca para volver a conectar al Mac con un solo toque.",
+                        style = TextStyle(fontSize = 13.sp, textAlign = TextAlign.Center),
+                        color = ElysiumColors.OnSurfaceMuted
+                    )
+                    Button(
+                        onClick = onBack,
+                        colors = ButtonDefaults.buttonColors(containerColor = ElysiumColors.NeonCyan),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().height(48.dp)
+                    ) {
+                        Text(
+                            text = "🔄 RECONECTAR AL MAC",
+                            style = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Black, letterSpacing = 1.sp),
+                            color = Color.Black
+                        )
+                    }
+                }
+            }
         }
     }
     if (showHelp) {
@@ -1229,7 +1304,7 @@ private fun Trackpad(
                                 "MacTrackpad",
                                 "GESTURE_END durationMs=$duration peakPointers=$peakPointerCount moved=${!isTap} dragX=${totalDrag.x.toInt()} dragY=${totalDrag.y.toInt()}"
                             )
-                            if (isTap && duration < 300 && totalDrag.getDistance() < 20f) {
+                            if (isTap && duration < 350 && totalDrag.getDistance() < 24f) {
                                 val tapPos = firstDown.position
                                 val (nx, ny) = calculateNormalizedTouch(
                                     posX = tapPos.x,
@@ -1240,8 +1315,8 @@ private fun Trackpad(
                                     bitmapH = currentBitmap?.height,
                                     scaleMode = currentScaleMode
                                 )
-                                val isBottomRight = (nx > 0.70f && ny > 0.70f)
-                                if (peakPointerCount == 2 || isBottomRight) {
+                                val isTrackpadCorner = !currentDirectTouch && (nx > 0.75f && ny > 0.75f)
+                                if (peakPointerCount == 2 || isTrackpadCorner) {
                                     onRightClick(nx, ny)
                                 } else {
                                     onLeftClick(nx, ny)
@@ -1276,10 +1351,10 @@ private fun Trackpad(
                             }
                         }
 
-                        if (frameDrag.getDistance() > 0.5f) {
+                        totalDrag += frameDrag
+                        if (totalDrag.getDistance() > 24f) {
                             isTap = false
                         }
-                        totalDrag += frameDrag
 
                         // Trigger Long-Press Drag if held >= 280ms with minimal initial movement
                         val elapsed = System.currentTimeMillis() - startTime
@@ -1322,11 +1397,11 @@ private fun Trackpad(
                                     if (abs(factor - 1f) > 0.04f) {
                                         onZoom(factor)
                                         initialPinchDistance = currentDist
-                                    } else if (frameDrag != Offset.Zero) {
+                                    } else if (frameDrag != Offset.Zero && totalDrag.getDistance() > 12f) {
                                         val scrollAccel = 2.2f
                                         onScroll(frameDrag.x * scrollAccel, frameDrag.y * scrollAccel)
                                     }
-                                } else if (frameDrag != Offset.Zero) {
+                                } else if (frameDrag != Offset.Zero && totalDrag.getDistance() > 12f) {
                                     val scrollAccel = 2.2f
                                     onScroll(frameDrag.x * scrollAccel, frameDrag.y * scrollAccel)
                                 }

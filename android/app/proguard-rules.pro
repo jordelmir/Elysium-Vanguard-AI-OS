@@ -123,3 +123,7 @@
 -keepclassmembers class com.elysium369.meet.diagnostic.** { *; }
 -keep class com.elysium369.meet.data.supabase.** { *; }
 -keepclassmembers class com.elysium369.meet.data.supabase.** { *; }
+
+# ── PdfBox / JPX Decoder (Optional JP2Decoder) ──────────────────────────────
+-dontwarn com.gemalto.jp2.JP2Decoder
+-dontwarn com.tom_roush.pdfbox.filter.JPXFilter

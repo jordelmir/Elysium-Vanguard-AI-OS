@@ -340,6 +340,12 @@ fun MacPairingScreen(
                     color = ElysiumColors.OnSurface
                 )
             }
+            Spacer(modifier = Modifier.height(12.dp))
+            MacAgentDownloadGuide(
+                isInitiallyExpanded = false,
+                onRetryScan = { },
+                modifier = Modifier.padding(horizontal = info.sidePadding, vertical = 4.dp)
+            )
             Spacer(modifier = Modifier.height(32.dp))
         }
     }
